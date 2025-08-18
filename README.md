@@ -50,7 +50,7 @@ A interface é renderizada diretamente no framebuffer do PS Vita, proporcionando
 
 1.  Clone este repositório:
     ```bash
-    git clone [https://github.com/SEU_USUARIO/VitaTPBPlayer.git](https://github.com/SEU_USUARIO/VitaTPBPlayer.git)
+    git clone https://github.com/mzzvxm/VitaTPBPlayer.git
     cd VitaTPBPlayer
     ```
 
