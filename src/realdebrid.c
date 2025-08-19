@@ -6,14 +6,6 @@
 #include "debugScreen.h"
 #include <unistd.h> // Para a função sleep()
 
-// aqui ce vai colocar teu token Real-Debrid
-// para obter um token, crie uma conta em https://real-debrid.com e gere um token na seção "API" do painel de usuário.
-// NÃO compartilhe esse token publicamente,
-// ele é único e vinculado à sua conta Real-Debrid.
-#ifndef RD_TOKEN
-#define RD_TOKEN "COLOQUE_SEU_TOKEN_AQUI"
-#endif
-
 // buffer growth for curl write callback
 struct mem_buffer {
     char *data;
