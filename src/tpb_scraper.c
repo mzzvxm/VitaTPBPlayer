@@ -64,6 +64,25 @@ static int json_extract_int(const char* json, const char* key, int* out) {
     return 1;
 }
 
+// Função para formatar o tamanho em bytes para KB, MB, GB...
+static void format_size(long long bytes, char* out, size_t out_size) {
+    const char* suffixes[] = {"B", "KB", "MB", "GB", "TB"};
+    int i = 0;
+    double d_bytes = bytes;
+
+    if (bytes == 0) {
+        snprintf(out, out_size, "0 B");
+        return;
+    }
+
+    while (d_bytes >= 1024 && i < 4) {
+        d_bytes /= 1024;
+        i++;
+    }
+
+    snprintf(out, out_size, "%.2f %s", d_bytes, suffixes[i]);
+}
+
 
 int tpb_search(const char *query, TpbResult *results, int max_results) {
     CURL *curl;
@@ -95,11 +114,9 @@ int tpb_search(const char *query, TpbResult *results, int max_results) {
         return 0;
     }
     
-    // A resposta da API é uma lista de objetos JSON. Vamos iterar por ela.
     int count = 0;
     const char* current_pos = chunk.memory;
 
-    // A resposta para "sem resultados" é a string "[{"name":"No results"}]"
     if (strstr(current_pos, "\"name\":\"No results\"")) {
         curl_easy_cleanup(curl);
         free(chunk.memory);
@@ -109,10 +126,12 @@ int tpb_search(const char *query, TpbResult *results, int max_results) {
     while (count < max_results && (current_pos = strstr(current_pos, "\"id\":"))) {
         char name[256] = "N/A";
         char info_hash[41] = "";
+        char size_str[32] = "0";
         int seeders = 0, leechers = 0;
 
         json_extract_string(current_pos, "name", name, sizeof(name));
         json_extract_string(current_pos, "info_hash", info_hash, sizeof(info_hash));
+        json_extract_string(current_pos, "size", size_str, sizeof(size_str)); // Extrai o tamanho como string
         json_extract_int(current_pos, "seeders", &seeders);
         json_extract_int(current_pos, "leechers", &leechers);
 
@@ -122,13 +141,13 @@ int tpb_search(const char *query, TpbResult *results, int max_results) {
             
             results[count].seeders = seeders;
             results[count].leechers = leechers;
+            format_size(atoll(size_str), results[count].size, sizeof(results[count].size));
             
             snprintf(results[count].magnet, sizeof(results[count].magnet), "magnet:?xt=urn:btih:%s", info_hash);
             
             count++;
         }
 
-        // Avança para o próximo objeto no JSON
         current_pos = strchr(current_pos, '}');
         if (!current_pos) break;
     }
