@@ -82,12 +82,13 @@ int tpb_search(const char *query, TpbResult *results, int max_results, char *err
         return -1;
     }
 
+    curl_easy_setopt(curl, CURLOPT_CAINFO, "app0:cacert.pem");
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "libcurl-agent/1.0");
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 20L); // Timeout de 20s para conectar
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L); // Timeout de 60s para a operação total
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 20L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);
     res = curl_easy_perform(curl);
 
     if (res != CURLE_OK) {
@@ -110,7 +111,7 @@ int tpb_search(const char *query, TpbResult *results, int max_results, char *err
     if (strstr(current_pos, "\"name\":\"No results\"")) {
         curl_easy_cleanup(curl);
         free(chunk.memory);
-        return 0; // Nenhum resultado, mas não é um erro
+        return 0;
     }
 
     while (count < max_results && (current_pos = strstr(current_pos, "\"id\":"))) {

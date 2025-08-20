@@ -37,6 +37,8 @@ int rd_add_magnet(const char *magnet, char *id_out, char *error_out, size_t erro
     CURL *curl = curl_easy_init();
     if (!curl) return 0;
 
+    curl_easy_setopt(curl, CURLOPT_CAINFO, "app0:cacert.pem");
+
     char url[] = "https://api.real-debrid.com/rest/1.0/torrents/addMagnet";
     struct mem_buffer response;
     response.data = malloc(1);
@@ -104,6 +106,8 @@ int rd_wait_for_ready(const char *id, char *error_out, size_t error_out_size) {
     CURL *curl = curl_easy_init();
     if (!curl) return 0;
 
+    curl_easy_setopt(curl, CURLOPT_CAINFO, "app0:cacert.pem");
+
     char url[512];
     snprintf(url, sizeof(url), "https://api.real-debrid.com/rest/1.0/torrents/info/%s", id);
 
@@ -157,6 +161,8 @@ int rd_get_file_url(const char *id, char *url_out, char *error_out, size_t error
 
     CURL *curl = curl_easy_init();
     if (!curl) return 0;
+    
+    curl_easy_setopt(curl, CURLOPT_CAINFO, "app0:cacert.pem");
 
     char url[512];
     snprintf(url, sizeof(url), "https://api.real-debrid.com/rest/1.0/torrents/info/%s", id);

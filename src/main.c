@@ -31,7 +31,7 @@ vita2d_font *font;
 #define COLOR_YELLOW RGBA8(255, 255, 0, 255)
 #define COLOR_GREY RGBA8(170, 170, 170, 255)
 
-static char search_query[OSK_INPUT_MAX_LENGTH] = "matrix";
+static char search_query[OSK_INPUT_MAX_LENGTH] = "Search query";
 static char error_message[256] = "";
 
 void show_status_screen(const char* title, const char* message) {
