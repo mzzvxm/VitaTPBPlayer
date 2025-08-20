@@ -1,0 +1,19 @@
+{
+    "configurations": [
+        {
+            "name": "VitaSDK",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/usr/local/vitasdk/arm-vita-eabi/include/**"
+            ],
+            "defines": [
+                "__VITA__"
+            ],
+            "cStandard": "c11",
+            "cppStandard": "c++11",
+            "compilerPath": "/usr/local/vitasdk/bin/arm-vita-eabi-gcc",
+            "intelliSenseMode": "linux-gcc-arm"
+        }
+    ],
+    "version": 4
+}

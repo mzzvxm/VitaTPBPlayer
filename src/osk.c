@@ -1,7 +1,8 @@
 #include <stdio.h>
 #include <string.h>
-#include "debugScreen.h"
 #include "osk.h"
+
+#define FONT_SIZE 20.0f // Definindo o tamanho da fonte aqui também
 
 static int cursor_x = 0;
 static int cursor_y = 0;
@@ -63,28 +64,26 @@ int osk_update(SceCtrlData *pad) {
     }
 
     if (pressed_buttons & SCE_CTRL_START) {
-        return 1; // Confirmação de entrada
+        return 1;
     }
     
-    return 0; // Continua no teclado
+    return 0;
 }
 
-void osk_draw(char* buffer) {
-    psvDebugScreenPrintf("Digite sua busca:\n");
-    psvDebugScreenPrintf("----------------------------------\n");
-    psvDebugScreenPrintf("[%s_]\n", buffer);
-    psvDebugScreenPrintf("----------------------------------\n\n");
+void osk_draw(vita2d_font *font, char *buffer) {
+    vita2d_font_draw_text(font, 40, 40, RGBA8(255, 255, 255, 255), FONT_SIZE, "Digite sua busca:");
+    vita2d_font_draw_textf(font, 40, 80, RGBA8(255, 255, 255, 255), FONT_SIZE, "[%s_]", buffer);
 
+    int y_pos = 150;
     for (int y = 0; y < layout_rows; y++) {
+        int x_pos = 40;
         for (int x = 0; x < strlen(keyboard_layout[y]); x++) {
-            if (y == cursor_y && x == cursor_x) {
-                psvDebugScreenPrintf("[%c]", keyboard_layout[y][x]);
-            } else {
-                psvDebugScreenPrintf(" %c ", keyboard_layout[y][x]);
-            }
+            unsigned int color = (y == cursor_y && x == cursor_x) ? RGBA8(255, 255, 0, 255) : RGBA8(255, 255, 255, 255);
+            vita2d_font_draw_textf(font, x_pos, y_pos, color, FONT_SIZE, "%c", keyboard_layout[y][x]);
+            x_pos += 30;
         }
-        psvDebugScreenPrintf("\n");
+        y_pos += 30;
     }
 
-    psvDebugScreenPrintf("\n\n(X) Adicionar | (O) Apagar | (START) Buscar\n");
+    vita2d_font_draw_text(font, 40, 480, RGBA8(255, 255, 255, 255), FONT_SIZE, "(X) Adicionar | (O) Apagar | (START) Buscar");
 }
