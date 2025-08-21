@@ -4,9 +4,15 @@
 ![Platform](https://img.shields.io/badge/platform-PS%20Vita-blue)
 ![Language](https://img.shields.io/badge/language-C-orange)
 
-Um cliente experimental de torrents para o PlayStation Vita, utilizando as APIs do The Pirate Bay (via `apibay.org`) e do Real-Debrid para permitir a busca e o download de arquivos diretamente no console.
+Um cliente de torrent funcional para o PlayStation Vita, que utiliza as APIs do The Pirate Bay e do Real-Debrid para buscar e preparar arquivos para download.
 
-**Atenção:** Este projeto é um **trabalho em andamento** e uma prova de conceito. Muitas funcionalidades ainda não estão implementadas ou podem não funcionar corretamente. O objetivo principal é educacional e de exploração das capacidades do PS Vita.
+**Atenção:** Este projeto está em uma fase de transição. A interface gráfica já foi modernizada, mas a implementação do download em segundo plano ainda está em andamento.
+
+### Visão Geral
+
+O VitaTPBPlayer permite que você busque torrents diretamente no seu PS Vita, utilize o poder do Real-Debrid para obter um link de download direto e, em seguida, baixe o arquivo para o seu console.
+
+O projeto foi recentemente refatorado para usar a biblioteca gráfica `libvita2d`, resultando em uma interface muito mais estável e visualmente limpa em comparação com as versões iniciais.
 
 ## O que ele faz?
 
@@ -65,10 +71,10 @@ A interface é renderizada diretamente no framebuffer do PS Vita, proporcionando
 
 3.  Compile o projeto:
     ```bash
-    make package
+    make
     ```
 
-4.  Isso irá gerar um arquivo `stremio_vita.vpk` na raiz do projeto. Transfira este arquivo para o seu PS Vita e instale-o usando o VitaShell.
+4.  Isso irá gerar um arquivo `VitaTPBPlayer.vpk` na raiz do projeto. Transfira este arquivo para o seu PS Vita e instale-o usando o VitaShell.
 
 ## Aviso Legal
 
