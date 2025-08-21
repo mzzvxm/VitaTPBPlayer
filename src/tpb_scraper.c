@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h> // NOVO: Para a função isalnum
 #include "tpb_scraper.h"
 
 struct MemoryStruct {
@@ -65,15 +66,51 @@ static void format_size(long long bytes, char* out, size_t out_size) {
     snprintf(out, out_size, "%.2f %s", d_bytes, suffixes[i]);
 }
 
+// NOVO: Função para codificar a string de busca para uma URL
+static void url_encode(const char *src, char *dst, size_t dst_size) {
+    char *dst_p = dst;
+    const char *src_p = src;
+    size_t remaining = dst_size - 1;
+
+    while (*src_p && remaining > 0) {
+        if (*src_p == ' ') {
+            if (remaining >= 3) {
+                *dst_p++ = '%';
+                *dst_p++ = '2';
+                *dst_p++ = '0';
+                remaining -= 3;
+            } else {
+                break; // Não há espaço suficiente
+            }
+        } else if (isalnum((unsigned char)*src_p) || *src_p == '-' || *src_p == '_' || *src_p == '.' || *src_p == '~') {
+            *dst_p++ = *src_p;
+            remaining--;
+        } else {
+            if (remaining >= 3) {
+                snprintf(dst_p, 4, "%%%02X", (unsigned char)*src_p);
+                dst_p += 3;
+                remaining -= 3;
+            } else {
+                break; // Não há espaço suficiente
+            }
+        }
+        src_p++;
+    }
+    *dst_p = '\0';
+}
+
 int tpb_search(const char *query, TpbResult *results, int max_results, char *error_out, size_t error_out_size) {
     CURL *curl;
     CURLcode res;
     char url[512];
+    char encoded_query[256]; // NOVO: Buffer para a query codificada
     struct MemoryStruct chunk;
     chunk.memory = malloc(1);
     chunk.size = 0;
 
-    snprintf(url, sizeof(url), "https://apibay.org/q.php?q=%s&cat=0", query);
+    // MODIFICADO: Codifica a query antes de usá-la na URL
+    url_encode(query, encoded_query, sizeof(encoded_query));
+    snprintf(url, sizeof(url), "https://apibay.org/q.php?q=%s&cat=0", encoded_query);
 
     curl = curl_easy_init();
     if (!curl) {

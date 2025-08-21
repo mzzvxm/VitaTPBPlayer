@@ -2,7 +2,7 @@ TITLE_ID = VTPB00001
 TARGET   = VitaTPBPlayer
 OBJS     = main.o osk.o player.o realdebrid.o tpb_scraper.o
 
-# Lista de bibliotecas final, removendo as problemáticas
+# Lista de bibliotecas final
 LIBS = -lvita2d -lSceCommonDialog_stub -lSceGxm_stub -lSceDisplay_stub \
        -lSceSysmodule_stub -lSceCtrl_stub -lScePgf_stub -lScePvf_stub \
        -lfreetype -lpng -ljpeg -lz -lbz2 -lm -lc \
@@ -12,10 +12,7 @@ PREFIX  = arm-vita-eabi
 CC      = $(PREFIX)-gcc
 CFLAGS  = -Wl,-q -Wall -O3
 
-# Caminhos do VitaSDK definidos diretamente
-VITASDK := /usr/local/vitasdk
-export PATH := $(VITASDK)/bin:$(PATH)
-
+# Usar a variável de ambiente VITASDK, que é o padrão
 CFLAGS += -I$(VITASDK)/arm-vita-eabi/include -Isrc -D__VITA__
 LIBS   += -L$(VITASDK)/arm-vita-eabi/lib
 
@@ -41,6 +38,7 @@ $(TARGET).velf: $(TARGET).elf
 $(TARGET).elf: $(OBJS)
 	$(CC) $(CFLAGS) $^ $(LIBS) -o $@
 
+# Regra para compilar arquivos .c que estão na pasta src
 %.o: src/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
