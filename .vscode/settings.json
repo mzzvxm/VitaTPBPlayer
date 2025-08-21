@@ -1,5 +1,6 @@
 {
     "files.associations": {
-        "vita2d.h": "c"
+        "vita2d.h": "c",
+        "http.h": "c"
     }
 }

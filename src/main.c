@@ -6,11 +6,17 @@
 #include <psp2/kernel/threadmgr/mutex.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
+#include <psp2/sysmodule.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <vita2d.h>
+
+#include <psp2/net/net.h>
+#include <psp2/net/netctl.h>
+#include "token_server.h"
+
 #include "tpb_scraper.h"
 #include "realdebrid.h"
 #include "player.h"
@@ -26,8 +32,10 @@ typedef enum {
     STATE_INPUT,
     STATE_SETTINGS,
     STATE_SHOW_RESULTS,
+    STATE_WAITING_RD,
     STATE_DOWNLOADING,
-    STATE_ERROR
+    STATE_ERROR,
+    STATE_TOKEN_SERVER
 } AppState;
 
 vita2d_font *font;
@@ -44,6 +52,7 @@ static AppState state_before_osk = STATE_MAIN_MENU;
 static RdUserInfo g_user_info;
 static char g_settings_status[128] = "";
 static int g_settings_info_valid = 0;
+static char vita_ip_address[32] = "Buscando IP...";
 
 struct DownloadProgress {
     char status_message[256];
@@ -53,46 +62,61 @@ struct DownloadProgress {
     int is_done;
     int is_cancelled;
     TpbResult selected_torrent;
+    char torrent_id[128];
 } g_progress;
 
 SceUID g_progress_mutex;
 SceUID g_download_thread_id;
 
-static int download_thread(SceSize args, void *argp) {
+static int add_torrent_thread(SceSize args, void *argp) {
+    sceKernelLockMutex(g_progress_mutex, 1, NULL);
+    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Passo 1/2: Adicionando magnet...");
+    g_progress.error_message[0] = '\0';
+    sceKernelUnlockMutex(g_progress_mutex, 1);
+
+    if (!rd_add_magnet(g_progress.selected_torrent.magnet, g_progress.torrent_id, g_progress.error_message, sizeof(g_progress.error_message))) {
+        goto thread_error;
+    }
+
+    sceKernelLockMutex(g_progress_mutex, 1, NULL);
+    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Passo 2/2: Selecionando arquivos...");
+    sceKernelUnlockMutex(g_progress_mutex, 1);
+    
+    if (!rd_select_all_files(g_progress.torrent_id, g_progress.error_message, sizeof(g_progress.error_message))) {
+        goto thread_error;
+    }
+    
+    sceKernelLockMutex(g_progress_mutex, 1, NULL);
+    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Pronto para verificacao. Pressione (X).");
+    g_progress.is_running = 0;
+    sceKernelUnlockMutex(g_progress_mutex, 1);
+    
+    return sceKernelExitDeleteThread(0);
+
+thread_error:
+    sceKernelLockMutex(g_progress_mutex, 1, NULL);
+    g_progress.is_running = 0;
+    strncpy(error_message, g_progress.error_message, sizeof(error_message) - 1);
+    error_message[sizeof(error_message) - 1] = '\0';
+    sceKernelUnlockMutex(g_progress_mutex, 1);
+    return sceKernelExitDeleteThread(0);
+}
+
+static int check_and_download_thread(SceSize args, void *argp) {
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
     g_progress.is_running = 1;
+    g_progress.is_done = 0;
     g_progress.error_message[0] = '\0';
-    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Enviando magnet...");
+    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Verificando link...");
     sceKernelUnlockMutex(g_progress_mutex, 1);
-
-    char torrent_id[128];
-    if (!rd_add_magnet(g_progress.selected_torrent.magnet, torrent_id, g_progress.error_message, sizeof(g_progress.error_message))) {
-        goto thread_error;
-    }
-
-    sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Selecionando arquivos...");
-    sceKernelUnlockMutex(g_progress_mutex, 1);
-    if (!rd_select_all_files(torrent_id, g_progress.error_message, sizeof(g_progress.error_message))) {
-        goto thread_error;
-    }
 
     char intermediate_link[2048];
-    int attempts = 0;
-    while (attempts < 30) {
+    if (!rd_get_intermediate_link(g_progress.torrent_id, intermediate_link, g_progress.error_message, sizeof(g_progress.error_message))) {
         sceKernelLockMutex(g_progress_mutex, 1, NULL);
-        snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Aguardando link (%d/30)...", attempts + 1);
+        snprintf(g_progress.status_message, sizeof(g_progress.status_message), "%s", g_progress.error_message);
+        g_progress.is_running = 0;
         sceKernelUnlockMutex(g_progress_mutex, 1);
-
-        if (rd_get_intermediate_link(torrent_id, intermediate_link, g_progress.error_message, sizeof(g_progress.error_message))) {
-            break;
-        }
-        sceKernelDelayThread(5 * 1000 * 1000);
-        attempts++;
-    }
-
-    if (attempts >= 30) {
-        goto thread_error;
+        return sceKernelExitDeleteThread(0);
     }
 
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
@@ -103,6 +127,10 @@ static int download_thread(SceSize args, void *argp) {
         goto thread_error;
     }
 
+    sceKernelLockMutex(g_progress_mutex, 1, NULL);
+    g_progress.is_running = 2;
+    sceKernelUnlockMutex(g_progress_mutex, 1);
+    
     char local_path[512];
     char safe_filename[256];
     int j = 0;
@@ -114,35 +142,19 @@ static int download_thread(SceSize args, void *argp) {
     safe_filename[j] = '\0';
     snprintf(local_path, sizeof(local_path), "ux0:data/VitaTPBPlayer/%s.mp4", safe_filename);
 
-    sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Baixando...");
-    sceKernelUnlockMutex(g_progress_mutex, 1);
-
-    if (!download_file(download_url, local_path, &g_progress)) {
-        // download_file preenche o erro em g_progress, não precisa de goto
-    }
-
-    sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    if (!g_progress.is_cancelled && g_progress.error_message[0] == '\0') {
-         snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Concluido! Salvo em ux0:data/VitaTPBPlayer/");
-    } else if (g_progress.is_cancelled) {
-         snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Download cancelado.");
-    }
-    sceKernelUnlockMutex(g_progress_mutex, 1);
-    
+    download_file(download_url, local_path, &g_progress);
     goto thread_exit;
 
 thread_error:
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    g_progress.is_done = 1;
     g_progress.is_running = 0;
     sceKernelUnlockMutex(g_progress_mutex, 1);
     return sceKernelExitDeleteThread(0);
 
 thread_exit:
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    g_progress.is_done = 1;
     g_progress.is_running = 0;
+    g_progress.is_done = 1;
     sceKernelUnlockMutex(g_progress_mutex, 1);
     return sceKernelExitDeleteThread(0);
 }
@@ -177,18 +189,38 @@ void draw_settings_screen(int selection) {
     vita2d_font_draw_text(font, 40, 100, COLOR_GREY, FONT_SIZE, "Token Real-Debrid:");
     vita2d_font_draw_text(font, 40, 125, COLOR_WHITE, FONT_SIZE, masked_token);
 
-    vita2d_font_draw_text(font, 40, 180, (selection == 0) ? COLOR_YELLOW : COLOR_WHITE, FONT_SIZE, ">> Editar Token");
+    vita2d_font_draw_text(font, 40, 180, (selection == 0) ? COLOR_YELLOW : COLOR_WHITE, FONT_SIZE, ">> Editar Token Manualmente");
     vita2d_font_draw_text(font, 40, 210, (selection == 1) ? COLOR_YELLOW : COLOR_WHITE, FONT_SIZE, ">> Testar Token");
-    vita2d_font_draw_text(font, 40, 240, (selection == 2) ? COLOR_YELLOW : COLOR_WHITE, FONT_SIZE, ">> Salvar e Voltar");
+    vita2d_font_draw_text(font, 40, 240, (selection == 2) ? COLOR_YELLOW : COLOR_WHITE, FONT_SIZE, ">> Receber Token via Wi-Fi");
+    vita2d_font_draw_text(font, 40, 270, (selection == 3) ? COLOR_YELLOW : COLOR_WHITE, FONT_SIZE, ">> Salvar e Voltar");
 
-    vita2d_font_draw_text(font, 40, 300, COLOR_GREY, FONT_SIZE, g_settings_status);
+    vita2d_font_draw_text(font, 40, 320, COLOR_GREY, FONT_SIZE, g_settings_status);
 
     if (g_settings_info_valid) {
-        vita2d_font_draw_textf(font, 40, 340, COLOR_WHITE, FONT_SIZE, "Usuario: %s", g_user_info.username);
-        vita2d_font_draw_textf(font, 40, 370, COLOR_WHITE, FONT_SIZE, "Email: %s", g_user_info.email);
-        vita2d_font_draw_textf(font, 40, 400, g_user_info.is_premium ? COLOR_GREEN : COLOR_YELLOW, FONT_SIZE,
+        vita2d_font_draw_textf(font, 40, 360, COLOR_WHITE, FONT_SIZE, "Usuario: %s", g_user_info.username);
+        vita2d_font_draw_textf(font, 40, 390, COLOR_WHITE, FONT_SIZE, "Email: %s", g_user_info.email);
+        vita2d_font_draw_textf(font, 40, 420, g_user_info.is_premium ? COLOR_GREEN : COLOR_YELLOW, FONT_SIZE,
             "Status: %s (Expira em: %s)", g_user_info.is_premium ? "Premium" : "Gratuito", g_user_info.expiration);
     }
+}
+
+static void get_ip_address() {
+    SceNetCtlInfo info;
+    if (sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info) == 0) {
+        strncpy(vita_ip_address, info.ip_address, sizeof(vita_ip_address) - 1);
+        vita_ip_address[sizeof(vita_ip_address) - 1] = '\0';
+    } else {
+        strcpy(vita_ip_address, "IP nao encontrado");
+    }
+}
+
+void draw_token_server_screen() {
+    vita2d_font_draw_text(font, 40, 150, COLOR_WHITE, FONT_SIZE + 4.0f, "Receber Token via Wi-Fi");
+    vita2d_font_draw_text(font, 40, 200, COLOR_GREY, FONT_SIZE, "1. Conecte seu celular/PC na mesma rede Wi-Fi.");
+    vita2d_font_draw_text(font, 40, 230, COLOR_GREY, FONT_SIZE, "2. Abra o navegador e acesse o seguinte endereco:");
+    vita2d_font_draw_textf(font, 40, 270, COLOR_YELLOW, FONT_SIZE + 2.0f, "http://%s:8080", vita_ip_address);
+    vita2d_font_draw_text(font, 40, 310, COLOR_GREY, FONT_SIZE, "3. Cole seu token e clique em Salvar.");
+    vita2d_font_draw_text(font, 40, 500, COLOR_GREY, FONT_SIZE - 2.0f, "Pressione (O) para cancelar e voltar.");
 }
 
 void draw_results_menu(TpbResult* results, int num_results, int selection, int current_page) {
@@ -217,6 +249,23 @@ void draw_results_menu(TpbResult* results, int num_results, int selection, int c
     vita2d_font_draw_text(font, 40, 500, COLOR_GREY, FONT_SIZE - 2.0f, "(X) Baixar | (O) Voltar | (L/R) Pagina | (TRIANGULO) Nova Busca");
 }
 
+void draw_waiting_rd_screen() {
+    sceKernelLockMutex(g_progress_mutex, 1, NULL);
+    char status[256];
+    char torrent_name[256];
+    strncpy(status, g_progress.status_message, sizeof(status) - 1);
+    status[sizeof(status)-1] = '\0';
+    strncpy(torrent_name, g_progress.selected_torrent.name, sizeof(torrent_name) - 1);
+    torrent_name[sizeof(torrent_name)-1] = '\0';
+    sceKernelUnlockMutex(g_progress_mutex, 1);
+
+    vita2d_font_draw_text(font, 40, 200, COLOR_WHITE, FONT_SIZE + 4.0f, "Aguardando Real-Debrid");
+    vita2d_font_draw_text(font, 40, 240, COLOR_GREY, FONT_SIZE, torrent_name);
+    vita2d_font_draw_text(font, 40, 280, COLOR_YELLOW, FONT_SIZE, status);
+    
+    vita2d_font_draw_text(font, 40, 480, COLOR_GREY, FONT_SIZE - 2.0f, "(X) Verificar Status e Iniciar Download | (O) Voltar");
+}
+
 void draw_progress_screen() {
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
     char status[256];
@@ -237,24 +286,39 @@ void draw_progress_screen() {
 }
 
 int main(int argc, char *argv[]) {
+    sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
+    sceSysmoduleLoadModule(SCE_SYSMODULE_HTTP);
+
+    static char net_memory[1024 * 1024];
+    SceNetInitParam net_init_param = {
+        .memory = net_memory,
+        .size = sizeof(net_memory),
+        .flags = 0
+    };
+    sceNetInit(&net_init_param);
+    sceNetCtlInit();
+
     vita2d_init();
-    g_progress_mutex = sceKernelCreateMutex("progress_mutex", 0, 0, NULL);
-
-    sceIoMkdir("ux0:data/VitaTPBPlayer", 0777);
-    if (!rd_load_token_from_file(TOKEN_CONFIG_PATH)) {
-        // Arquivo não existe
-    }
-
     vita2d_set_clear_color(RGBA8(25, 25, 25, 255));
     font = vita2d_load_font_file("app0:font.ttf");
-
     if (!font) {
         font = vita2d_load_font_file("ux0:app/VTPB00001/font.ttf");
-        if (!font) {
-            vita2d_fini();
-            sceKernelExitProcess(0);
-            return 0;
-        }
+    }
+
+    if (!font) {
+        sceNetCtlTerm();
+        sceNetTerm();
+        sceSysmoduleUnloadModule(SCE_SYSMODULE_HTTP);
+        sceSysmoduleUnloadModule(SCE_SYSMODULE_NET);
+        vita2d_fini();
+        sceKernelExitProcess(0);
+        return 0;
+    }
+
+    g_progress_mutex = sceKernelCreateMutex("progress_mutex", 0, 0, NULL);
+    sceIoMkdir("ux0:data/VitaTPBPlayer", 0777);
+    if (!rd_load_token_from_file(TOKEN_CONFIG_PATH)) {
+        // Arquivo de token não existe ainda, o que é normal na primeira execução.
     }
 
     AppState app_state = STATE_MAIN_MENU;
@@ -287,8 +351,6 @@ int main(int argc, char *argv[]) {
                         app_state = STATE_INPUT;
                     } else if (menu_selection == 1) {
                         settings_selection = 0;
-                        g_settings_status[0] = '\0';
-                        g_settings_info_valid = 0;
                         app_state = STATE_SETTINGS;
                     } else if (menu_selection == 2) goto exit_loop;
                 }
@@ -338,7 +400,7 @@ int main(int argc, char *argv[]) {
             case STATE_SETTINGS: {
                 draw_settings_screen(settings_selection);
                 if (pressed_buttons & SCE_CTRL_UP) { if (settings_selection > 0) settings_selection--; }
-                if (pressed_buttons & SCE_CTRL_DOWN) { if (settings_selection < 2) settings_selection++; }
+                if (pressed_buttons & SCE_CTRL_DOWN) { if (settings_selection < 3) settings_selection++; }
                 if (pressed_buttons & SCE_CTRL_CROSS) {
                     switch (settings_selection) {
                         case 0:
@@ -359,14 +421,27 @@ int main(int argc, char *argv[]) {
                             }
                             break;
                         case 2:
+                            get_ip_address();
+                            token_server_start(8080);
+                            app_state = STATE_TOKEN_SERVER;
+                            break;
+                        case 3:
                             rd_save_token_to_file(TOKEN_CONFIG_PATH);
                             app_state = STATE_MAIN_MENU;
                             break;
                     }
                 }
                 if (pressed_buttons & SCE_CTRL_CIRCLE) {
-                    rd_load_token_from_file(TOKEN_CONFIG_PATH);
                     app_state = STATE_MAIN_MENU;
+                }
+                break;
+            }
+            case STATE_TOKEN_SERVER: {
+                draw_token_server_screen();
+                if (pressed_buttons & SCE_CTRL_CIRCLE) {
+                    token_server_stop();
+                    rd_load_token_from_file(TOKEN_CONFIG_PATH);
+                    app_state = STATE_SETTINGS;
                 }
                 break;
             }
@@ -405,20 +480,47 @@ int main(int argc, char *argv[]) {
                         g_progress.error_message[0] = '\0';
                         snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Iniciando...");
                         sceKernelUnlockMutex(g_progress_mutex, 1);
-
-                        g_download_thread_id = sceKernelCreateThread("download_thread", download_thread, 0x10000100, 0x10000, 0, 0, NULL);
+                        
+                        g_download_thread_id = sceKernelCreateThread("add_torrent_thread", add_torrent_thread, 0x10000100, 0x10000, 0, 0, NULL);
                         sceKernelStartThread(g_download_thread_id, 0, NULL);
-
-                        app_state = STATE_DOWNLOADING;
+                        
+                        app_state = STATE_WAITING_RD;
                     }
                     if (pressed_buttons & SCE_CTRL_TRIANGLE) {
                         state_before_osk = STATE_MAIN_MENU;
                         app_state = STATE_INPUT;
                     }
-
                     if (results_selection < current_page * ITEMS_PER_PAGE) current_page = results_selection / ITEMS_PER_PAGE;
                     if (results_selection >= (current_page + 1) * ITEMS_PER_PAGE) current_page = results_selection / ITEMS_PER_PAGE;
                 }
+                break;
+            }
+            case STATE_WAITING_RD: {
+                draw_waiting_rd_screen();
+                
+                sceKernelLockMutex(g_progress_mutex, 1, NULL);
+                int is_running = g_progress.is_running;
+                if (strlen(error_message) > 0) {
+                     app_state = STATE_ERROR;
+                }
+                sceKernelUnlockMutex(g_progress_mutex, 1);
+                
+                if (!is_running) {
+                    if (pressed_buttons & SCE_CTRL_CROSS) {
+                        g_download_thread_id = sceKernelCreateThread("check_and_download_thread", check_and_download_thread, 0x10000100, 0x10000, 0, 0, NULL);
+                        sceKernelStartThread(g_download_thread_id, 0, NULL);
+                    }
+                    if (pressed_buttons & SCE_CTRL_CIRCLE) {
+                        app_state = STATE_SHOW_RESULTS;
+                    }
+                }
+                
+                sceKernelLockMutex(g_progress_mutex, 1, NULL);
+                if (g_progress.is_running == 2) {
+                    g_progress.is_running = 1;
+                    app_state = STATE_DOWNLOADING;
+                }
+                sceKernelUnlockMutex(g_progress_mutex, 1);
                 break;
             }
             case STATE_DOWNLOADING: {
@@ -431,11 +533,9 @@ int main(int argc, char *argv[]) {
                 sceKernelLockMutex(g_progress_mutex, 1, NULL);
                 if (g_progress.is_done) {
                     if (g_progress.error_message[0] != '\0') {
-                        strncpy(error_message, g_progress.error_message, sizeof(error_message));
+                        strncpy(error_message, g_progress.error_message, sizeof(error_message)-1);
                         error_message[sizeof(error_message)-1] = '\0';
                         app_state = STATE_ERROR;
-                    } else if (g_progress.is_cancelled) {
-                        app_state = STATE_SHOW_RESULTS;
                     }
                 }
                 sceKernelUnlockMutex(g_progress_mutex, 1);
@@ -454,6 +554,18 @@ int main(int argc, char *argv[]) {
     }
 
 exit_loop:
+    if (token_server_is_running()) {
+        token_server_stop();
+    }
+
+    sceNetCtlTerm();
+    sceNetTerm();
+    
+    sceSysmoduleUnloadModule(SCE_SYSMODULE_HTTP);
+    sceSysmoduleUnloadModule(SCE_SYSMODULE_NET);
+    
+    // free(net_memory); // Não usamos mais free com buffer estático
+    
     vita2d_free_font(font);
     vita2d_fini();
     sceKernelDeleteMutex(g_progress_mutex);
