@@ -33,8 +33,8 @@ A ideia do VitaTPBPlayer é criar um fluxo simples para assistir a conteúdo no 
 -   [x] Interface de texto simples usando uma biblioteca de `debugScreen` customizada.
 -   [x] Teclado virtual na tela para inserção de texto.
 -   [x] Paginação nos resultados da busca.
+-   [x] Salvar configurações (como o token do Real-Debrid) em um arquivo.
 -   [ ] Melhorar a interface do usuário (UI).
--   [ ] Salvar configurações (como o token do Real-Debrid) em um arquivo.
 -   [ ] Gerenciamento de múltiplos downloads/arquivos.
 -   [ ] Player de vídeo integrado (um objetivo de longo prazo).
 
@@ -60,21 +60,12 @@ A interface é renderizada diretamente no framebuffer do PS Vita, proporcionando
     cd VitaTPBPlayer
     ```
 
-2.  **Adicione seu Token do Real-Debrid**: Este é o passo mais importante. Abra o arquivo `src/realdebrid.c` e insira seu token pessoal na linha indicada.
-    ```c
-    // Encontre esta linha:
-    #define RD_TOKEN "COLOQUE_SEU_TOKEN_AQUI"
-    
-    // E substitua pelo seu token:
-    #define RD_TOKEN "SEUTOKENPESSOALDOREALDEBRID"
-    ```
-
-3.  Compile o projeto:
+2.  Compile o projeto:
     ```bash
     make
     ```
 
-4.  Isso irá gerar um arquivo `VitaTPBPlayer.vpk` na raiz do projeto. Transfira este arquivo para o seu PS Vita e instale-o usando o VitaShell.
+3.  Isso irá gerar um arquivo `VitaTPBPlayer.vpk` na raiz do projeto. Transfira este arquivo para o seu PS Vita e instale-o usando o VitaShell.
 
 ## Aviso Legal
 
