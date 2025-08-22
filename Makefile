@@ -1,11 +1,10 @@
 TITLE_ID = VTPB00001
 TARGET   = VitaTPBPlayer
-# NOVO: Adicionado token_server.o
 OBJS     = main.o osk.o player.o realdebrid.o tpb_scraper.o token_server.o
 
-# MODIFICADO: Adicionadas bibliotecas de rede, http e pthread
+# MODIFICADO: Adicionada a biblioteca -lSceTouch_stub
 LIBS = -lvita2d -lSceCommonDialog_stub -lSceGxm_stub -lSceDisplay_stub \
-       -lSceSysmodule_stub -lSceCtrl_stub -lScePgf_stub -lScePvf_stub \
+       -lSceSysmodule_stub -lSceCtrl_stub -lSceTouch_stub -lScePgf_stub -lScePvf_stub \
        -lfreetype -lpng -ljpeg -lz -lbz2 -lm -lc \
        -lcurl -lssl -lcrypto -lSceAppMgr_stub \
        -lSceNet_stub -lSceNetCtl_stub -lpthread

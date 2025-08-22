@@ -7,6 +7,7 @@
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
 #include <psp2/sysmodule.h>
+#include <psp2/touch.h> // NOVO: Header para suporte a toque
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -173,12 +174,11 @@ void draw_main_menu(int selection) {
     vita2d_font_draw_text(font, 40, 100, (selection == 0) ? COLOR_YELLOW : COLOR_WHITE, FONT_SIZE, ">> Buscar Torrents");
     vita2d_font_draw_text(font, 40, 130, (selection == 1) ? COLOR_YELLOW : COLOR_WHITE, FONT_SIZE, ">> Configuracoes");
     vita2d_font_draw_text(font, 40, 160, (selection == 2) ? COLOR_YELLOW : COLOR_WHITE, FONT_SIZE, ">> Sair");
-    vita2d_font_draw_text(font, 40, 500, COLOR_GREY, FONT_SIZE - 2.0f, "Use CIMA/BAIXO e (X) para selecionar.");
+    vita2d_font_draw_text(font, 40, 500, COLOR_GREY, FONT_SIZE - 2.0f, "Use CIMA/BAIXO, (X) ou o toque para selecionar.");
 }
 
 void draw_settings_screen(int selection) {
     vita2d_font_draw_text(font, 40, 40, COLOR_WHITE, FONT_SIZE + 4.0f, "Configuracoes");
-
     const char* token = rd_get_token();
     char masked_token[64] = "Nao configurado";
     if (strlen(token) > 8) {
@@ -193,7 +193,6 @@ void draw_settings_screen(int selection) {
     vita2d_font_draw_text(font, 40, 210, (selection == 1) ? COLOR_YELLOW : COLOR_WHITE, FONT_SIZE, ">> Testar Token");
     vita2d_font_draw_text(font, 40, 240, (selection == 2) ? COLOR_YELLOW : COLOR_WHITE, FONT_SIZE, ">> Receber Token via Wi-Fi");
     vita2d_font_draw_text(font, 40, 270, (selection == 3) ? COLOR_YELLOW : COLOR_WHITE, FONT_SIZE, ">> Salvar e Voltar");
-
     vita2d_font_draw_text(font, 40, 320, COLOR_GREY, FONT_SIZE, g_settings_status);
 
     if (g_settings_info_valid) {
@@ -290,11 +289,7 @@ int main(int argc, char *argv[]) {
     sceSysmoduleLoadModule(SCE_SYSMODULE_HTTP);
 
     static char net_memory[1024 * 1024];
-    SceNetInitParam net_init_param = {
-        .memory = net_memory,
-        .size = sizeof(net_memory),
-        .flags = 0
-    };
+    SceNetInitParam net_init_param = { .memory = net_memory, .size = sizeof(net_memory), .flags = 0 };
     sceNetInit(&net_init_param);
     sceNetCtlInit();
 
@@ -304,7 +299,6 @@ int main(int argc, char *argv[]) {
     if (!font) {
         font = vita2d_load_font_file("ux0:app/VTPB00001/font.ttf");
     }
-
     if (!font) {
         sceNetCtlTerm();
         sceNetTerm();
@@ -318,8 +312,11 @@ int main(int argc, char *argv[]) {
     g_progress_mutex = sceKernelCreateMutex("progress_mutex", 0, 0, NULL);
     sceIoMkdir("ux0:data/VitaTPBPlayer", 0777);
     if (!rd_load_token_from_file(TOKEN_CONFIG_PATH)) {
-        // Arquivo de token não existe ainda, o que é normal na primeira execução.
+        // Arquivo de token não existe
     }
+
+    // NOVO: Inicializa o hardware de toque
+    sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
 
     AppState app_state = STATE_MAIN_MENU;
     TpbResult results[MAX_RESULTS];
@@ -329,13 +326,39 @@ int main(int argc, char *argv[]) {
     int settings_selection = 0;
     int results_selection = 0;
     int current_page = 0;
+    
     SceCtrlData pad;
     unsigned int old_buttons = 0;
+
+    // NOVO: Variáveis para controle de toque
+    SceTouchData touch_data;
+    int touch_x = -1;
+    int touch_y = -1;
+    int touch_held = 0; // Para saber se um dedo está pressionando a tela
 
     while (1) {
         sceCtrlPeekBufferPositive(0, &pad, 1);
         unsigned int pressed_buttons = pad.buttons & ~old_buttons;
         old_buttons = pad.buttons;
+
+        // NOVO: Lógica de leitura e detecção de um "tap" (toque rápido)
+        sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch_data, 1);
+        int touch_tapped = 0;
+        
+        if (touch_data.reportNum > 0 && !touch_held) {
+            // Dedo acabou de tocar na tela, guarda a coordenada
+            touch_held = 1;
+            touch_x = touch_data.report[0].x / 2;
+            touch_y = touch_data.report[0].y / 2;
+        } else if (touch_data.reportNum == 0 && touch_held) {
+            // Dedo acabou de ser liberado, isso constitui um "tap"
+            touch_held = 0;
+            touch_tapped = 1;
+        } else if (touch_data.reportNum == 0) {
+            // Garante que o estado seja limpo se não houver toque
+            touch_x = -1;
+            touch_y = -1;
+        }
 
         vita2d_start_drawing();
         vita2d_clear_screen();
@@ -343,6 +366,26 @@ int main(int argc, char *argv[]) {
         switch (app_state) {
             case STATE_MAIN_MENU: {
                 draw_main_menu(menu_selection);
+
+                // MODIFICADO: Lógica de toque para o menu principal
+                if (touch_tapped) {
+                    // Área para "Buscar Torrents" (y ~100)
+                    if (touch_x > 40 && touch_x < 400 && touch_y > 90 && touch_y < 120) {
+                        menu_selection = 0;
+                        pressed_buttons |= SCE_CTRL_CROSS;
+                    } 
+                    // Área para "Configurações" (y ~130)
+                    else if (touch_x > 40 && touch_x < 400 && touch_y > 120 && touch_y < 150) {
+                        menu_selection = 1;
+                        pressed_buttons |= SCE_CTRL_CROSS;
+                    }
+                    // Área para "Sair" (y ~160)
+                    else if (touch_x > 40 && touch_x < 400 && touch_y > 150 && touch_y < 180) {
+                        menu_selection = 2;
+                        pressed_buttons |= SCE_CTRL_CROSS;
+                    }
+                }
+
                 if (pressed_buttons & SCE_CTRL_UP) { if (menu_selection > 0) menu_selection--; }
                 if (pressed_buttons & SCE_CTRL_DOWN) { if (menu_selection < 2) menu_selection++; }
                 if (pressed_buttons & SCE_CTRL_CROSS) {
@@ -563,8 +606,6 @@ exit_loop:
     
     sceSysmoduleUnloadModule(SCE_SYSMODULE_HTTP);
     sceSysmoduleUnloadModule(SCE_SYSMODULE_NET);
-    
-    // free(net_memory); // Não usamos mais free com buffer estático
     
     vita2d_free_font(font);
     vita2d_fini();
