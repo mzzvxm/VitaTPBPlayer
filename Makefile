@@ -1,6 +1,6 @@
 TITLE_ID = VTPB00001
 TARGET   = VitaTPBPlayer
-OBJS     = main.o osk.o player.o realdebrid.o tpb_scraper.o token_server.o
+OBJS     = main.o osk.o player.o realdebrid.o tpb_scraper.o token_server.o stream_manager.o cJSON.o
 
 # MODIFICADO: Adicionada a biblioteca -lSceTouch_stub
 LIBS = -lvita2d -lSceAppUtil_stub -lSceCommonDialog_stub -lSceGxm_stub -lSceDisplay_stub \

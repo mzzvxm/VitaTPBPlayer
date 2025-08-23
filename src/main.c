@@ -27,13 +27,13 @@
 #define ITEMS_PER_PAGE 12
 #define FONT_SIZE 18.0f
 #define TOKEN_CONFIG_PATH "ux0:data/VitaTPBPlayer/token.txt"
+#define DOWNLOAD_FOLDER "ux0:data/VitaTPBPlayer/"
 
 typedef enum {
     STATE_MAIN_MENU,
     STATE_INPUT,
     STATE_SETTINGS,
     STATE_SHOW_RESULTS,
-    STATE_WAITING_RD,
     STATE_DOWNLOADING,
     STATE_ERROR,
     STATE_TOKEN_SERVER
@@ -55,24 +55,28 @@ static char g_settings_status[128] = "";
 static int g_settings_info_valid = 0;
 static char vita_ip_address[32] = "Buscando IP...";
 
-struct DownloadProgress {
+// Estrutura de progresso global
+struct ProgressData {
     char status_message[256];
     char error_message[256];
     float progress_percent;
-    int is_running;
-    int is_done;
-    int is_cancelled;
+    volatile int is_running;
+    volatile int is_done;
+    volatile int is_cancelled;
     TpbResult selected_torrent;
     char torrent_id[128];
+    char final_filepath[512];
 } g_progress;
 
 SceUID g_progress_mutex;
-SceUID g_download_thread_id;
+SceUID g_worker_thread_id;
 
-static int add_torrent_thread(SceSize args, void *argp) {
+// Thread único para todo o processo de download
+static int download_worker_thread(SceSize args, void *argp) {
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Passo 1/2: Adicionando magnet...");
+    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Passo 1/4: Adicionando magnet...");
     g_progress.error_message[0] = '\0';
+    g_progress.is_running = 1;
     sceKernelUnlockMutex(g_progress_mutex, 1);
 
     if (!rd_add_magnet(g_progress.selected_torrent.magnet, g_progress.torrent_id, g_progress.error_message, sizeof(g_progress.error_message))) {
@@ -80,98 +84,59 @@ static int add_torrent_thread(SceSize args, void *argp) {
     }
 
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Passo 2/2: Selecionando arquivos...");
+    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Passo 2/4: Processando torrent...");
     sceKernelUnlockMutex(g_progress_mutex, 1);
     
     if (!rd_select_all_files(g_progress.torrent_id, g_progress.error_message, sizeof(g_progress.error_message))) {
         goto thread_error;
     }
-    
-    sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Pronto para verificacao. Pressione (X).");
-    g_progress.is_running = 0;
-    sceKernelUnlockMutex(g_progress_mutex, 1);
-    
-    return sceKernelExitDeleteThread(0);
-
-thread_error:
-    sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    g_progress.is_running = 0;
-    // CORRIGIDO: Usando snprintf para evitar avisos de compilação
-    snprintf(error_message, sizeof(error_message), "%s", g_progress.error_message);
-    sceKernelUnlockMutex(g_progress_mutex, 1);
-    return sceKernelExitDeleteThread(0);
-}
-
-// NOVO: Função de callback para atualizar a UI durante a espera
-void update_wait_status_callback(int current_attempt, int max_attempts) {
-    sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    snprintf(g_progress.status_message, sizeof(g_progress.status_message),
-             "Verificando... (Tentativa %d de %d)", current_attempt, max_attempts);
-    sceKernelUnlockMutex(g_progress_mutex, 1);
-}
-
-static int check_and_download_thread(SceSize args, void *argp) {
-    sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    g_progress.is_running = 1;
-    g_progress.is_done = 0;
-    g_progress.error_message[0] = '\0';
-    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Verificando status do torrent...");
-    sceKernelUnlockMutex(g_progress_mutex, 1);
 
     RdTorrentInfo torrent_info;
-    // MODIFICADO: Passando o endereço da função de callback para dar feedback visual
-    if (!rd_wait_for_torrent_ready(g_progress.torrent_id, &torrent_info, &update_wait_status_callback, g_progress.error_message, sizeof(g_progress.error_message))) {
-        sceKernelLockMutex(g_progress_mutex, 1, NULL);
-        // CORRIGIDO: Usando snprintf para copiar a mensagem de erro com segurança
-        snprintf(g_progress.status_message, sizeof(g_progress.status_message), "%s", g_progress.error_message);
-        g_progress.is_running = 0;
-        sceKernelUnlockMutex(g_progress_mutex, 1);
-        return sceKernelExitDeleteThread(0);
+    if (!rd_wait_for_torrent_ready(g_progress.torrent_id, &torrent_info, NULL, g_progress.error_message, sizeof(g_progress.error_message))) {
+        goto thread_error;
     }
 
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Desbloqueando link final...");
+    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Passo 3/4: Desbloqueando link...");
     sceKernelUnlockMutex(g_progress_mutex, 1);
-    
+
     char download_url[2048];
     if (!rd_unrestrict_link(torrent_info.original_link, download_url, g_progress.error_message, sizeof(g_progress.error_message))) {
         goto thread_error;
     }
 
-    sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    g_progress.is_running = 2; // Sinaliza que o download pode começar
-    sceKernelUnlockMutex(g_progress_mutex, 1);
-    
-    char local_path[512];
+    // Limpa o nome do arquivo para criar um caminho seguro
     char safe_filename[256];
     int j = 0;
     for (int i = 0; g_progress.selected_torrent.name[i] != '\0' && j < sizeof(safe_filename) - 5; i++) {
-        if (isalnum((unsigned char)g_progress.selected_torrent.name[i]) || g_progress.selected_torrent.name[i] == ' ' || g_progress.selected_torrent.name[i] == '.') {
+        if (isalnum((unsigned char)g_progress.selected_torrent.name[i]) || g_progress.selected_torrent.name[i] == '.' || g_progress.selected_torrent.name[i] == '-' || g_progress.selected_torrent.name[i] == ' ') {
             safe_filename[j++] = g_progress.selected_torrent.name[i];
         }
     }
     safe_filename[j] = '\0';
-    snprintf(local_path, sizeof(local_path), "ux0:data/VitaTPBPlayer/%s.mp4", safe_filename);
+    snprintf(g_progress.final_filepath, sizeof(g_progress.final_filepath), "%s%s.mp4", DOWNLOAD_FOLDER, safe_filename);
+    
+    sceKernelLockMutex(g_progress_mutex, 1, NULL);
+    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Passo 4/4: Iniciando download...");
+    sceKernelUnlockMutex(g_progress_mutex, 1);
 
-    if (!download_file(download_url, local_path, &g_progress)) {
+    // Inicia o download do arquivo completo
+    if (!download_file(download_url, g_progress.final_filepath, &g_progress)) {
         goto thread_error;
     }
     
-    goto thread_exit;
+    // Sucesso!
+    sceKernelLockMutex(g_progress_mutex, 1, NULL);
+    g_progress.is_done = 1;
+    g_progress.is_running = 0;
+    sceKernelUnlockMutex(g_progress_mutex, 1);
+    
+    return sceKernelExitDeleteThread(0);
 
 thread_error:
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    // CORRIGIDO: Usando snprintf para evitar avisos de compilação
+    g_progress.is_running = 0;
     snprintf(error_message, sizeof(error_message), "%s", g_progress.error_message);
-    g_progress.is_running = 0;
-    sceKernelUnlockMutex(g_progress_mutex, 1);
-    return sceKernelExitDeleteThread(0);
-
-thread_exit:
-    sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    g_progress.is_running = 0;
-    g_progress.is_done = 1;
     sceKernelUnlockMutex(g_progress_mutex, 1);
     return sceKernelExitDeleteThread(0);
 }
@@ -261,24 +226,7 @@ void draw_results_menu(TpbResult* results, int num_results, int selection, int c
         y_pos += 25;
     }
 
-    vita2d_font_draw_text(font, 40, 500, COLOR_GREY, FONT_SIZE - 2.0f, "(X) Baixar | (O) Voltar | (L/R) Pagina | (TRIANGULO) Nova Busca");
-}
-
-void draw_waiting_rd_screen() {
-    sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    char status[256];
-    char torrent_name[256];
-    strncpy(status, g_progress.status_message, sizeof(status) - 1);
-    status[sizeof(status)-1] = '\0';
-    strncpy(torrent_name, g_progress.selected_torrent.name, sizeof(torrent_name) - 1);
-    torrent_name[sizeof(torrent_name)-1] = '\0';
-    sceKernelUnlockMutex(g_progress_mutex, 1);
-
-    vita2d_font_draw_text(font, 40, 200, COLOR_WHITE, FONT_SIZE + 4.0f, "Aguardando Real-Debrid");
-    vita2d_font_draw_text(font, 40, 240, COLOR_GREY, FONT_SIZE, torrent_name);
-    vita2d_font_draw_text(font, 40, 280, COLOR_YELLOW, FONT_SIZE, status);
-    
-    vita2d_font_draw_text(font, 40, 480, COLOR_GREY, FONT_SIZE - 2.0f, "(X) Verificar Status e Iniciar Download | (O) Voltar");
+    vita2d_font_draw_text(font, 40, 500, COLOR_GREY, FONT_SIZE - 2.0f, "(X) Baixar e Assistir | (O) Voltar | (L/R) Pagina | (TRIANGULO) Nova Busca");
 }
 
 void draw_progress_screen() {
@@ -297,7 +245,7 @@ void draw_progress_screen() {
     vita2d_draw_rectangle(40, 270, bar_width, 30, COLOR_GREY);
     vita2d_draw_rectangle(40, 270, progress_width, 30, COLOR_GREEN);
 
-    vita2d_font_draw_text(font, 40, 500, COLOR_GREY, FONT_SIZE - 2.0f, "Pressione (TRIANGULO) para cancelar.");
+    vita2d_font_draw_text(font, 40, 500, COLOR_GREY, FONT_SIZE - 2.0f, "Pressione (O) para cancelar.");
 }
 
 int main(int argc, char *argv[]) {
@@ -316,20 +264,13 @@ int main(int argc, char *argv[]) {
         font = vita2d_load_font_file("ux0:app/VTPB00001/font.ttf");
     }
     if (!font) {
-        sceNetCtlTerm();
-        sceNetTerm();
-        sceSysmoduleUnloadModule(SCE_SYSMODULE_HTTP);
-        sceSysmoduleUnloadModule(SCE_SYSMODULE_NET);
-        vita2d_fini();
         sceKernelExitProcess(0);
         return 0;
     }
 
     g_progress_mutex = sceKernelCreateMutex("progress_mutex", 0, 0, NULL);
-    sceIoMkdir("ux0:data/VitaTPBPlayer", 0777);
-    if (!rd_load_token_from_file(TOKEN_CONFIG_PATH)) {
-        // Arquivo de token não existe
-    }
+    sceIoMkdir(DOWNLOAD_FOLDER, 0777);
+    rd_load_token_from_file(TOKEN_CONFIG_PATH);
 
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
 
@@ -408,11 +349,10 @@ int main(int argc, char *argv[]) {
             case STATE_INPUT: {
                 if (state_before_osk == STATE_SETTINGS) {
                     strncpy(temp_osk_buffer, rd_get_token(), sizeof(temp_osk_buffer)-1);
-                    temp_osk_buffer[sizeof(temp_osk_buffer) - 1] = '\0';
                 } else {
                      strncpy(temp_osk_buffer, search_query, sizeof(temp_osk_buffer)-1);
-                     temp_osk_buffer[sizeof(temp_osk_buffer) - 1] = '\0';
                 }
+                temp_osk_buffer[sizeof(temp_osk_buffer) - 1] = '\0';
                 osk_init(temp_osk_buffer);
 
                 while(app_state == STATE_INPUT) {
@@ -497,7 +437,7 @@ int main(int argc, char *argv[]) {
             case STATE_SHOW_RESULTS: {
                 if (num_results == 0) {
                     vita2d_font_draw_text(font, 40, 80, COLOR_WHITE, FONT_SIZE, "Nenhum resultado encontrado.");
-                    vita2d_font_draw_text(font, 40, 110, COLOR_WHITE, FONT_SIZE, "Pressione (O) para voltar ao menu.");
+                    vita2d_font_draw_text(font, 40, 500, COLOR_GREY, FONT_SIZE - 2.0f, "(O) Voltar");
                     if (pressed_buttons & SCE_CTRL_CIRCLE) app_state = STATE_MAIN_MENU;
                 } else {
                     draw_results_menu(results, num_results, results_selection, current_page);
@@ -527,13 +467,13 @@ int main(int argc, char *argv[]) {
                         g_progress.is_cancelled = 0;
                         g_progress.progress_percent = 0.0f;
                         g_progress.error_message[0] = '\0';
-                        snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Iniciando...");
+                        g_progress.final_filepath[0] = '\0';
                         sceKernelUnlockMutex(g_progress_mutex, 1);
                         
-                        g_download_thread_id = sceKernelCreateThread("add_torrent_thread", add_torrent_thread, 0x10000100, 0x10000, 0, 0, NULL);
-                        sceKernelStartThread(g_download_thread_id, 0, NULL);
+                        g_worker_thread_id = sceKernelCreateThread("download_worker", download_worker_thread, 0x10000100, 0x10000, 0, 0, NULL);
+                        sceKernelStartThread(g_worker_thread_id, 0, NULL);
                         
-                        app_state = STATE_WAITING_RD;
+                        app_state = STATE_DOWNLOADING;
                     }
                     if (pressed_buttons & SCE_CTRL_TRIANGLE) {
                         state_before_osk = STATE_MAIN_MENU;
@@ -544,56 +484,43 @@ int main(int argc, char *argv[]) {
                 }
                 break;
             }
-            case STATE_WAITING_RD: {
-                draw_waiting_rd_screen();
-                
-                sceKernelLockMutex(g_progress_mutex, 1, NULL);
-                int is_running = g_progress.is_running;
-                if (strlen(error_message) > 0) {
-                     app_state = STATE_ERROR;
-                }
-                sceKernelUnlockMutex(g_progress_mutex, 1);
-                
-                if (!is_running) {
-                    if (pressed_buttons & SCE_CTRL_CROSS) {
-                        g_download_thread_id = sceKernelCreateThread("check_and_download_thread", check_and_download_thread, 0x10000100, 0x10000, 0, 0, NULL);
-                        sceKernelStartThread(g_download_thread_id, 0, NULL);
-                    }
-                    if (pressed_buttons & SCE_CTRL_CIRCLE) {
-                        app_state = STATE_SHOW_RESULTS;
-                    }
-                }
-                
-                sceKernelLockMutex(g_progress_mutex, 1, NULL);
-                if (g_progress.is_running == 2) {
-                    g_progress.is_running = 1;
-                    app_state = STATE_DOWNLOADING;
-                }
-                sceKernelUnlockMutex(g_progress_mutex, 1);
-                break;
-            }
             case STATE_DOWNLOADING: {
                 draw_progress_screen();
-                if (pressed_buttons & SCE_CTRL_TRIANGLE) {
+
+                if (pressed_buttons & SCE_CTRL_CIRCLE) {
                     sceKernelLockMutex(g_progress_mutex, 1, NULL);
                     g_progress.is_cancelled = 1;
                     sceKernelUnlockMutex(g_progress_mutex, 1);
                 }
+
                 sceKernelLockMutex(g_progress_mutex, 1, NULL);
-                if (g_progress.is_done) {
-                    if (g_progress.error_message[0] != '\0') {
-                        snprintf(error_message, sizeof(error_message), "%s", g_progress.error_message);
-                        app_state = STATE_ERROR;
+                int is_done = g_progress.is_done;
+                int is_running = g_progress.is_running;
+                int was_cancelled = g_progress.is_cancelled;
+                char final_path[512];
+                snprintf(final_path, sizeof(final_path), "%s", g_progress.final_filepath);
+                sceKernelUnlockMutex(g_progress_mutex, 1);
+
+                if (is_done) {
+                    player_play(final_path);
+                    app_state = STATE_SHOW_RESULTS;
+                } else if (!is_running) {
+                    if (strlen(error_message) > 0) {
+                         app_state = STATE_ERROR;
+                    } else if (was_cancelled) {
+                        app_state = STATE_SHOW_RESULTS;
                     }
                 }
-                sceKernelUnlockMutex(g_progress_mutex, 1);
                 break;
             }
             case STATE_ERROR: {
                 vita2d_font_draw_text(font, 40, 272, COLOR_YELLOW, FONT_SIZE, "--- ERRO ---");
                 vita2d_font_draw_text(font, 40, 300, COLOR_WHITE, FONT_SIZE, error_message);
                 vita2d_font_draw_text(font, 40, 330, COLOR_GREY, FONT_SIZE, "Pressione (O) para voltar.");
-                if (pressed_buttons & SCE_CTRL_CIRCLE) app_state = STATE_SHOW_RESULTS;
+                if (pressed_buttons & SCE_CTRL_CIRCLE) {
+                    error_message[0] = '\0'; // Limpa o erro ao voltar
+                    app_state = STATE_SHOW_RESULTS;
+                }
                 break;
             }
         }

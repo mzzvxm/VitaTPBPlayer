@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #ifdef __vita__
 #include <psp2/kernel/processmgr.h>
@@ -11,33 +10,41 @@
 
 #include <curl/curl.h>
 #include "player.h"
-#include "tpb_scraper.h"
+#include "realdebrid.h" // Necessário para a definição de RdUserInfo, etc.
+#include "tpb_scraper.h"  // Necessário para a definição de TpbResult
 
-extern struct DownloadProgress {
+// A declaração da estrutura precisa estar disponível aqui
+struct ProgressData {
     char status_message[256];
     char error_message[256];
     float progress_percent;
-    int is_running;
-    int is_done;
-    int is_cancelled;
+    volatile int is_running;
+    volatile int is_done;
+    volatile int is_cancelled;
     TpbResult selected_torrent;
-} g_progress;
+    char torrent_id[128];
+    char final_filepath[512];
+};
 
+// Precisamos acessar o mutex global definido no main.c
 extern SceUID g_progress_mutex;
 
 static int progress_callback(void *clientp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
-    struct DownloadProgress *progress = (struct DownloadProgress *)clientp;
+    struct ProgressData *progress = (struct ProgressData *)clientp;
 
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
 
     if (progress->is_cancelled) {
         sceKernelUnlockMutex(g_progress_mutex, 1);
-        return 1;
+        return 1; // Retornar 1 cancela o download
     }
 
     if (dltotal > 0) {
         progress->progress_percent = ((float)dlnow / (float)dltotal) * 100.0f;
-        snprintf(progress->status_message, sizeof(progress->status_message), "Baixando... %.2f%%", progress->progress_percent);
+        snprintf(progress->status_message, sizeof(progress->status_message), "Baixando... %.1f%% (%.1f / %.1f MB)",
+                 progress->progress_percent,
+                 (float)dlnow / (1024.0f * 1024.0f),
+                 (float)dltotal / (1024.0f * 1024.0f));
     }
 
     sceKernelUnlockMutex(g_progress_mutex, 1);
@@ -45,16 +52,18 @@ static int progress_callback(void *clientp, curl_off_t dltotal, curl_off_t dlnow
     return 0;
 }
 
-int download_file(const char *url, const char *dest_path, struct DownloadProgress *progress) {
+int download_file(const char *url, const char *dest_path, struct ProgressData *progress) {
     if (!url || !dest_path) return 0;
 
     CURL *curl = curl_easy_init();
     if (!curl) {
+        snprintf(progress->error_message, sizeof(progress->error_message), "Falha ao iniciar cURL.");
         return 0;
     }
 
     FILE *fp = fopen(dest_path, "wb");
     if (!fp) {
+        snprintf(progress->error_message, sizeof(progress->error_message), "Nao foi possivel criar o arquivo de video.");
         curl_easy_cleanup(curl);
         return 0;
     }
@@ -72,18 +81,18 @@ int download_file(const char *url, const char *dest_path, struct DownloadProgres
 
     CURLcode res = curl_easy_perform(curl);
     fclose(fp);
-    curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
+        // Se não foi cancelado pelo usuário, registra o erro
         if (res != CURLE_ABORTED_BY_CALLBACK) {
-            sceKernelLockMutex(g_progress_mutex, 1, NULL);
             snprintf(progress->error_message, sizeof(progress->error_message), "Falha no download: %s", curl_easy_strerror(res));
-            sceKernelUnlockMutex(g_progress_mutex, 1);
         }
-        remove(dest_path);
+        remove(dest_path); // Apaga o arquivo incompleto
+        curl_easy_cleanup(curl);
         return 0;
     }
 
+    curl_easy_cleanup(curl);
     return 1;
 }
 
