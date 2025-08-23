@@ -228,53 +228,81 @@ int rd_select_all_files(const char *id, char *error_out, size_t error_out_size) 
     return 0;
 }
 
-int rd_get_intermediate_link(const char *id, char *link_out, char *error_out, size_t error_out_size) {
+int rd_wait_for_torrent_ready(const char *id, RdTorrentInfo *torrentInfo, rd_progress_callback callback, char *error_out, size_t error_out_size) {
     if (!id || !has_valid_token()) {
         snprintf(error_out, error_out_size, "ID ou Token invalido.");
         return 0;
     }
-    CURL *curl = curl_easy_init();
-    if (!curl) return 0;
-    char url[512];
-    snprintf(url, sizeof(url), "https://api.real-debrid.com/rest/1.0/torrents/info/%s", id);
-    struct mem_buffer response;
-    response.data = malloc(1); response.size = 0;
-    struct curl_slist *headers = NULL;
-    char auth_header[512];
-    snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", g_rd_token);
-    headers = curl_slist_append(headers, auth_header);
-    curl_easy_setopt(curl, CURLOPT_CAINFO, "app0:cacert.pem");
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    CURLcode res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-        snprintf(error_out, error_out_size, "RD Info: %s", curl_easy_strerror(res));
-        goto cleanup;
-    }
-    const char *links_key = "\"links\": [\"";
-    char *link_start = strstr(response.data, links_key);
-    if (link_start) {
-        link_start += strlen(links_key);
-        char *link_end = strchr(link_start, '\"');
-        if (link_end) {
-            size_t len = link_end - link_start;
-            if (len > 0 && len < 2048) {
-                strncpy(link_out, link_start, len);
-                link_out[len] = '\0';
-                curl_slist_free_all(headers);
-                free(response.data);
-                curl_easy_cleanup(curl);
-                return 1;
+
+    const int max_retries = 24; // Tenta por 2 minutos (24 tentativas * 5 segundos)
+    for (int i = 0; i < max_retries; i++) {
+        if (callback) {
+            callback(i + 1, max_retries);
+        }
+
+        CURL *curl = curl_easy_init();
+        if (!curl) return 0;
+
+        char url[512];
+        snprintf(url, sizeof(url), "https://api.real-debrid.com/rest/1.0/torrents/info/%s", id);
+        
+        struct mem_buffer response = { .data = malloc(1), .size = 0 };
+        struct curl_slist *headers = NULL;
+        char auth_header[512];
+        snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", g_rd_token);
+        headers = curl_slist_append(headers, auth_header);
+
+        curl_easy_setopt(curl, CURLOPT_CAINFO, "app0:cacert.pem");
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+        CURLcode res = curl_easy_perform(curl);
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+        int torrent_ready = 0;
+        if (res == CURLE_OK && http_code == 200) {
+            char status[64] = "";
+            manual_json_extract(response.data, "status", status, sizeof(status));
+
+            if (strcmp(status, "downloaded") == 0) {
+                const char *links_key = "\"links\": [";
+                char *links_array_start = strstr(response.data, links_key);
+                if (links_array_start) {
+                    if (links_array_start[strlen(links_key)] != ']') {
+                        const char *link_delimiter = "\"";
+                        char *link_start = strstr(links_array_start, link_delimiter);
+                        if (link_start) {
+                            link_start += 1;
+                            char *link_end = strstr(link_start, link_delimiter);
+                            if (link_end) {
+                                size_t len = link_end - link_start;
+                                if (len > 0 && len < sizeof(torrentInfo->original_link)) {
+                                    strncpy(torrentInfo->original_link, link_start, len);
+                                    torrentInfo->original_link[len] = '\0';
+                                    torrent_ready = 1;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
+        
+        curl_slist_free_all(headers);
+        free(response.data);
+        curl_easy_cleanup(curl);
+
+        if (torrent_ready) {
+            return 1;
+        }
+        
+        sceKernelDelayThread(5 * 1000 * 1000);
     }
-    snprintf(error_out, error_out_size, "RD Info: Link intermediario nao disponivel ainda.");
-cleanup:
-    curl_slist_free_all(headers);
-    free(response.data);
-    curl_easy_cleanup(curl);
+
+    snprintf(error_out, error_out_size, "RD Info: Timeout. O torrent nao ficou pronto.");
     return 0;
 }
 

@@ -7,7 +7,7 @@
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
 #include <psp2/sysmodule.h>
-#include <psp2/touch.h> // NOVO: Header para suporte a toque
+#include <psp2/touch.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -97,10 +97,18 @@ static int add_torrent_thread(SceSize args, void *argp) {
 thread_error:
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
     g_progress.is_running = 0;
-    strncpy(error_message, g_progress.error_message, sizeof(error_message) - 1);
-    error_message[sizeof(error_message) - 1] = '\0';
+    // CORRIGIDO: Usando snprintf para evitar avisos de compilação
+    snprintf(error_message, sizeof(error_message), "%s", g_progress.error_message);
     sceKernelUnlockMutex(g_progress_mutex, 1);
     return sceKernelExitDeleteThread(0);
+}
+
+// NOVO: Função de callback para atualizar a UI durante a espera
+void update_wait_status_callback(int current_attempt, int max_attempts) {
+    sceKernelLockMutex(g_progress_mutex, 1, NULL);
+    snprintf(g_progress.status_message, sizeof(g_progress.status_message),
+             "Verificando... (Tentativa %d de %d)", current_attempt, max_attempts);
+    sceKernelUnlockMutex(g_progress_mutex, 1);
 }
 
 static int check_and_download_thread(SceSize args, void *argp) {
@@ -108,12 +116,14 @@ static int check_and_download_thread(SceSize args, void *argp) {
     g_progress.is_running = 1;
     g_progress.is_done = 0;
     g_progress.error_message[0] = '\0';
-    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Verificando link...");
+    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Verificando status do torrent...");
     sceKernelUnlockMutex(g_progress_mutex, 1);
 
-    char intermediate_link[2048];
-    if (!rd_get_intermediate_link(g_progress.torrent_id, intermediate_link, g_progress.error_message, sizeof(g_progress.error_message))) {
+    RdTorrentInfo torrent_info;
+    // MODIFICADO: Passando o endereço da função de callback para dar feedback visual
+    if (!rd_wait_for_torrent_ready(g_progress.torrent_id, &torrent_info, &update_wait_status_callback, g_progress.error_message, sizeof(g_progress.error_message))) {
         sceKernelLockMutex(g_progress_mutex, 1, NULL);
+        // CORRIGIDO: Usando snprintf para copiar a mensagem de erro com segurança
         snprintf(g_progress.status_message, sizeof(g_progress.status_message), "%s", g_progress.error_message);
         g_progress.is_running = 0;
         sceKernelUnlockMutex(g_progress_mutex, 1);
@@ -123,13 +133,14 @@ static int check_and_download_thread(SceSize args, void *argp) {
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
     snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Desbloqueando link final...");
     sceKernelUnlockMutex(g_progress_mutex, 1);
+    
     char download_url[2048];
-    if (!rd_unrestrict_link(intermediate_link, download_url, g_progress.error_message, sizeof(g_progress.error_message))) {
+    if (!rd_unrestrict_link(torrent_info.original_link, download_url, g_progress.error_message, sizeof(g_progress.error_message))) {
         goto thread_error;
     }
 
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    g_progress.is_running = 2;
+    g_progress.is_running = 2; // Sinaliza que o download pode começar
     sceKernelUnlockMutex(g_progress_mutex, 1);
     
     char local_path[512];
@@ -143,11 +154,16 @@ static int check_and_download_thread(SceSize args, void *argp) {
     safe_filename[j] = '\0';
     snprintf(local_path, sizeof(local_path), "ux0:data/VitaTPBPlayer/%s.mp4", safe_filename);
 
-    download_file(download_url, local_path, &g_progress);
+    if (!download_file(download_url, local_path, &g_progress)) {
+        goto thread_error;
+    }
+    
     goto thread_exit;
 
 thread_error:
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
+    // CORRIGIDO: Usando snprintf para evitar avisos de compilação
+    snprintf(error_message, sizeof(error_message), "%s", g_progress.error_message);
     g_progress.is_running = 0;
     sceKernelUnlockMutex(g_progress_mutex, 1);
     return sceKernelExitDeleteThread(0);
@@ -315,7 +331,6 @@ int main(int argc, char *argv[]) {
         // Arquivo de token não existe
     }
 
-    // NOVO: Inicializa o hardware de toque
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
 
     AppState app_state = STATE_MAIN_MENU;
@@ -330,32 +345,27 @@ int main(int argc, char *argv[]) {
     SceCtrlData pad;
     unsigned int old_buttons = 0;
 
-    // NOVO: Variáveis para controle de toque
     SceTouchData touch_data;
     int touch_x = -1;
     int touch_y = -1;
-    int touch_held = 0; // Para saber se um dedo está pressionando a tela
+    int touch_held = 0;
 
     while (1) {
         sceCtrlPeekBufferPositive(0, &pad, 1);
         unsigned int pressed_buttons = pad.buttons & ~old_buttons;
         old_buttons = pad.buttons;
 
-        // NOVO: Lógica de leitura e detecção de um "tap" (toque rápido)
         sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch_data, 1);
         int touch_tapped = 0;
         
         if (touch_data.reportNum > 0 && !touch_held) {
-            // Dedo acabou de tocar na tela, guarda a coordenada
             touch_held = 1;
             touch_x = touch_data.report[0].x / 2;
             touch_y = touch_data.report[0].y / 2;
         } else if (touch_data.reportNum == 0 && touch_held) {
-            // Dedo acabou de ser liberado, isso constitui um "tap"
             touch_held = 0;
             touch_tapped = 1;
         } else if (touch_data.reportNum == 0) {
-            // Garante que o estado seja limpo se não houver toque
             touch_x = -1;
             touch_y = -1;
         }
@@ -367,19 +377,15 @@ int main(int argc, char *argv[]) {
             case STATE_MAIN_MENU: {
                 draw_main_menu(menu_selection);
 
-                // MODIFICADO: Lógica de toque para o menu principal
                 if (touch_tapped) {
-                    // Área para "Buscar Torrents" (y ~100)
                     if (touch_x > 40 && touch_x < 400 && touch_y > 90 && touch_y < 120) {
                         menu_selection = 0;
                         pressed_buttons |= SCE_CTRL_CROSS;
                     } 
-                    // Área para "Configurações" (y ~130)
                     else if (touch_x > 40 && touch_x < 400 && touch_y > 120 && touch_y < 150) {
                         menu_selection = 1;
                         pressed_buttons |= SCE_CTRL_CROSS;
                     }
-                    // Área para "Sair" (y ~160)
                     else if (touch_x > 40 && touch_x < 400 && touch_y > 150 && touch_y < 180) {
                         menu_selection = 2;
                         pressed_buttons |= SCE_CTRL_CROSS;
@@ -576,8 +582,7 @@ int main(int argc, char *argv[]) {
                 sceKernelLockMutex(g_progress_mutex, 1, NULL);
                 if (g_progress.is_done) {
                     if (g_progress.error_message[0] != '\0') {
-                        strncpy(error_message, g_progress.error_message, sizeof(error_message)-1);
-                        error_message[sizeof(error_message)-1] = '\0';
+                        snprintf(error_message, sizeof(error_message), "%s", g_progress.error_message);
                         app_state = STATE_ERROR;
                     }
                 }

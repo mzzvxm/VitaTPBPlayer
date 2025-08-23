@@ -3,7 +3,7 @@ TARGET   = VitaTPBPlayer
 OBJS     = main.o osk.o player.o realdebrid.o tpb_scraper.o token_server.o
 
 # MODIFICADO: Adicionada a biblioteca -lSceTouch_stub
-LIBS = -lvita2d -lSceCommonDialog_stub -lSceGxm_stub -lSceDisplay_stub \
+LIBS = -lvita2d -lSceAppUtil_stub -lSceCommonDialog_stub -lSceGxm_stub -lSceDisplay_stub \
        -lSceSysmodule_stub -lSceCtrl_stub -lSceTouch_stub -lScePgf_stub -lScePvf_stub \
        -lfreetype -lpng -ljpeg -lz -lbz2 -lm -lc \
        -lcurl -lssl -lcrypto -lSceAppMgr_stub \

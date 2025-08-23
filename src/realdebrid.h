@@ -11,6 +11,17 @@ typedef struct {
     int is_premium;
 } RdUserInfo;
 
+// Estrutura para guardar informações detalhadas do torrent
+typedef struct {
+    char id[128];
+    char filename[256];
+    char original_link[2048]; // Link intermediário
+} RdTorrentInfo;
+
+// Define um "ponteiro de função" para o nosso callback de progresso
+// Isso permitirá que a função de espera se comunique com a interface principal.
+typedef void (*rd_progress_callback)(int current_attempt, int max_attempts);
+
 // Funções de gerenciamento de token
 void rd_set_token(const char *token);
 const char* rd_get_token();
@@ -21,7 +32,8 @@ int rd_get_user_info(RdUserInfo *userInfo, char *error_out, size_t error_out_siz
 // Funções do fluxo de torrent
 int rd_add_magnet(const char *magnet, char *id_out, char *error_out, size_t error_out_size);
 int rd_select_all_files(const char *id, char *error_out, size_t error_out_size);
-int rd_get_intermediate_link(const char *id, char *link_out, char *error_out, size_t error_out_size);
+// A função agora aceita um callback para reportar o progresso
+int rd_wait_for_torrent_ready(const char *id, RdTorrentInfo *torrentInfo, rd_progress_callback callback, char *error_out, size_t error_out_size);
 int rd_unrestrict_link(const char *link, char *url_out, char *error_out, size_t error_out_size);
 
 #endif
