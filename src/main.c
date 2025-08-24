@@ -24,6 +24,7 @@
 #include "osk.h"
 
 #define MAX_RESULTS 50
+#define MAX_FILES_PER_TORRENT 100 // Limite de arquivos por torrent
 #define ITEMS_PER_PAGE 12
 #define FONT_SIZE 18.0f
 #define TOKEN_CONFIG_PATH "ux0:data/VitaTPBPlayer/token.txt"
@@ -34,6 +35,7 @@ typedef enum {
     STATE_INPUT,
     STATE_SETTINGS,
     STATE_SHOW_RESULTS,
+    STATE_SELECT_FILE, // <-- NOVO ESTADO
     STATE_DOWNLOADING,
     STATE_ERROR,
     STATE_TOKEN_SERVER
@@ -55,6 +57,12 @@ static char g_settings_status[128] = "";
 static int g_settings_info_valid = 0;
 static char vita_ip_address[32] = "Buscando IP...";
 
+// Variáveis globais para a seleção de arquivos
+static RdFileInfo g_torrent_files[MAX_FILES_PER_TORRENT];
+static int g_num_torrent_files = 0;
+static char g_current_torrent_id[128] = {0};
+static int g_selected_file_id = -1;
+
 // Estrutura de progresso global
 struct ProgressData {
     char status_message[256];
@@ -63,36 +71,31 @@ struct ProgressData {
     volatile int is_running;
     volatile int is_done;
     volatile int is_cancelled;
-    TpbResult selected_torrent;
-    char torrent_id[128];
+    // Removido `selected_torrent` e `torrent_id` daqui para serem gerenciados globalmente
     char final_filepath[512];
 } g_progress;
 
 SceUID g_progress_mutex;
 SceUID g_worker_thread_id;
 
-// Thread único para todo o processo de download
+// Thread foi modificada para iniciar a partir da seleção de arquivo
 static int download_worker_thread(SceSize args, void *argp) {
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
-    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Passo 1/4: Adicionando magnet...");
+    snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Passo 1/4: Selecionando arquivo...");
     g_progress.error_message[0] = '\0';
     g_progress.is_running = 1;
     sceKernelUnlockMutex(g_progress_mutex, 1);
 
-    if (!rd_add_magnet(g_progress.selected_torrent.magnet, g_progress.torrent_id, g_progress.error_message, sizeof(g_progress.error_message))) {
+    if (!rd_select_specific_file(g_current_torrent_id, g_selected_file_id, g_progress.error_message, sizeof(g_progress.error_message))) {
         goto thread_error;
     }
-
+    
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
     snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Passo 2/4: Processando torrent...");
     sceKernelUnlockMutex(g_progress_mutex, 1);
-    
-    if (!rd_select_all_files(g_progress.torrent_id, g_progress.error_message, sizeof(g_progress.error_message))) {
-        goto thread_error;
-    }
 
     RdTorrentInfo torrent_info;
-    if (!rd_wait_for_torrent_ready(g_progress.torrent_id, &torrent_info, NULL, g_progress.error_message, sizeof(g_progress.error_message))) {
+    if (!rd_wait_for_torrent_ready(g_current_torrent_id, &torrent_info, NULL, g_progress.error_message, sizeof(g_progress.error_message))) {
         goto thread_error;
     }
 
@@ -104,28 +107,35 @@ static int download_worker_thread(SceSize args, void *argp) {
     if (!rd_unrestrict_link(torrent_info.original_link, download_url, g_progress.error_message, sizeof(g_progress.error_message))) {
         goto thread_error;
     }
+    
+    // Pega o nome do arquivo da lista global
+    char safe_filename[256] = "video"; // fallback
+    for(int i=0; i < g_num_torrent_files; ++i) {
+        if (g_torrent_files[i].id == g_selected_file_id) {
+            // Extrai apenas o nome do arquivo do path completo
+            char* last_slash = strrchr(g_torrent_files[i].path, '/');
+            char* filename_to_use = last_slash ? last_slash + 1 : g_torrent_files[i].path;
 
-    // Limpa o nome do arquivo para criar um caminho seguro
-    char safe_filename[256];
-    int j = 0;
-    for (int i = 0; g_progress.selected_torrent.name[i] != '\0' && j < sizeof(safe_filename) - 5; i++) {
-        if (isalnum((unsigned char)g_progress.selected_torrent.name[i]) || g_progress.selected_torrent.name[i] == '.' || g_progress.selected_torrent.name[i] == '-' || g_progress.selected_torrent.name[i] == ' ') {
-            safe_filename[j++] = g_progress.selected_torrent.name[i];
+            int j = 0;
+            for (int k = 0; filename_to_use[k] != '\0' && j < sizeof(safe_filename) - 5; k++) {
+                if (isalnum((unsigned char)filename_to_use[k]) || filename_to_use[k] == '.' || filename_to_use[k] == '-' || filename_to_use[k] == ' ') {
+                    safe_filename[j++] = filename_to_use[k];
+                }
+            }
+            safe_filename[j] = '\0';
+            break;
         }
     }
-    safe_filename[j] = '\0';
-    snprintf(g_progress.final_filepath, sizeof(g_progress.final_filepath), "%s%s.mp4", DOWNLOAD_FOLDER, safe_filename);
+    snprintf(g_progress.final_filepath, sizeof(g_progress.final_filepath), "%s%s", DOWNLOAD_FOLDER, safe_filename);
     
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
     snprintf(g_progress.status_message, sizeof(g_progress.status_message), "Passo 4/4: Iniciando download...");
     sceKernelUnlockMutex(g_progress_mutex, 1);
 
-    // Inicia o download do arquivo completo
     if (!download_file(download_url, g_progress.final_filepath, &g_progress)) {
         goto thread_error;
     }
     
-    // Sucesso!
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
     g_progress.is_done = 1;
     g_progress.is_running = 0;
@@ -140,6 +150,7 @@ thread_error:
     sceKernelUnlockMutex(g_progress_mutex, 1);
     return sceKernelExitDeleteThread(0);
 }
+
 
 void show_status_screen(const char* title, const char* message) {
     vita2d_start_drawing();
@@ -229,6 +240,31 @@ void draw_results_menu(TpbResult* results, int num_results, int selection, int c
     vita2d_font_draw_text(font, 40, 500, COLOR_GREY, FONT_SIZE - 2.0f, "(X) Baixar e Assistir | (O) Voltar | (L/R) Pagina | (TRIANGULO) Nova Busca");
 }
 
+// --- NOVA FUNÇÃO DE DESENHO ---
+void draw_file_selection_screen(int selection, int current_page) {
+    int y_pos = 40;
+    int total_pages = (g_num_torrent_files + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+    if (total_pages == 0) total_pages = 1;
+    vita2d_font_draw_textf(font, 40, y_pos, COLOR_WHITE, FONT_SIZE, "Selecione o arquivo (Pagina %d/%d)", current_page + 1, total_pages);
+    y_pos += 40;
+
+    int start_index = current_page * ITEMS_PER_PAGE;
+    int end_index = start_index + ITEMS_PER_PAGE;
+    if (end_index > g_num_torrent_files) end_index = g_num_torrent_files;
+
+    for (int i = start_index; i < end_index; i++) {
+        unsigned int color = (i == selection) ? COLOR_YELLOW : COLOR_WHITE;
+        
+        char truncated_path[80];
+        strncpy(truncated_path, g_torrent_files[i].path, sizeof(truncated_path) - 1);
+        truncated_path[sizeof(truncated_path) - 1] = '\0';
+
+        vita2d_font_draw_textf(font, 40, y_pos, color, FONT_SIZE, "%s %s", (i == selection) ? ">>" : "  ", truncated_path);
+        y_pos += 25;
+    }
+    vita2d_font_draw_text(font, 40, 500, COLOR_GREY, FONT_SIZE - 2.0f, "(X) Confirmar | (O) Voltar | (L/R) Pagina");
+}
+
 void draw_progress_screen() {
     sceKernelLockMutex(g_progress_mutex, 1, NULL);
     char status[256];
@@ -247,6 +283,21 @@ void draw_progress_screen() {
 
     vita2d_font_draw_text(font, 40, 500, COLOR_GREY, FONT_SIZE - 2.0f, "Pressione (O) para cancelar.");
 }
+
+void start_download() {
+    sceKernelLockMutex(g_progress_mutex, 1, NULL);
+    g_progress.is_running = 1;
+    g_progress.is_done = 0;
+    g_progress.is_cancelled = 0;
+    g_progress.progress_percent = 0.0f;
+    g_progress.error_message[0] = '\0';
+    g_progress.final_filepath[0] = '\0';
+    sceKernelUnlockMutex(g_progress_mutex, 1);
+    
+    g_worker_thread_id = sceKernelCreateThread("download_worker", download_worker_thread, 0x10000100, 0x10000, 0, 0, NULL);
+    sceKernelStartThread(g_worker_thread_id, 0, NULL);
+}
+
 
 int main(int argc, char *argv[]) {
     sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
@@ -281,6 +332,7 @@ int main(int argc, char *argv[]) {
     int menu_selection = 0;
     int settings_selection = 0;
     int results_selection = 0;
+    int file_selection = 0; // Para a nova tela
     int current_page = 0;
     
     SceCtrlData pad;
@@ -460,20 +512,32 @@ int main(int argc, char *argv[]) {
                         app_state = STATE_MAIN_MENU;
                     }
                     if (pressed_buttons & SCE_CTRL_CROSS) {
-                        sceKernelLockMutex(g_progress_mutex, 1, NULL);
-                        g_progress.selected_torrent = results[results_selection];
-                        g_progress.is_running = 1;
-                        g_progress.is_done = 0;
-                        g_progress.is_cancelled = 0;
-                        g_progress.progress_percent = 0.0f;
-                        g_progress.error_message[0] = '\0';
-                        g_progress.final_filepath[0] = '\0';
-                        sceKernelUnlockMutex(g_progress_mutex, 1);
+                        // --- FLUXO MODIFICADO ---
+                        show_status_screen("Processando...", "Adicionando magnet ao Real-Debrid...");
+                        if (!rd_add_magnet(results[results_selection].magnet, g_current_torrent_id, error_message, sizeof(error_message))) {
+                            app_state = STATE_ERROR;
+                            break;
+                        }
                         
-                        g_worker_thread_id = sceKernelCreateThread("download_worker", download_worker_thread, 0x10000100, 0x10000, 0, 0, NULL);
-                        sceKernelStartThread(g_worker_thread_id, 0, NULL);
-                        
-                        app_state = STATE_DOWNLOADING;
+                        show_status_screen("Processando...", "Buscando lista de arquivos do torrent...");
+                        g_num_torrent_files = rd_get_torrent_files(g_current_torrent_id, g_torrent_files, MAX_FILES_PER_TORRENT, error_message, sizeof(error_message));
+
+                        if (g_num_torrent_files < 0) {
+                            app_state = STATE_ERROR;
+                        } else if (g_num_torrent_files == 0) {
+                            snprintf(error_message, sizeof(error_message), "Nenhum arquivo encontrado neste torrent.");
+                            app_state = STATE_ERROR;
+                        } else if (g_num_torrent_files == 1) {
+                            // Se só tem 1 arquivo, seleciona automaticamente e inicia o download
+                            g_selected_file_id = g_torrent_files[0].id;
+                            start_download();
+                            app_state = STATE_DOWNLOADING;
+                        } else {
+                            // Se tem múltiplos arquivos, vai para a nova tela de seleção
+                            file_selection = 0;
+                            current_page = 0;
+                            app_state = STATE_SELECT_FILE;
+                        }
                     }
                     if (pressed_buttons & SCE_CTRL_TRIANGLE) {
                         state_before_osk = STATE_MAIN_MENU;
@@ -482,6 +546,40 @@ int main(int argc, char *argv[]) {
                     if (results_selection < current_page * ITEMS_PER_PAGE) current_page = results_selection / ITEMS_PER_PAGE;
                     if (results_selection >= (current_page + 1) * ITEMS_PER_PAGE) current_page = results_selection / ITEMS_PER_PAGE;
                 }
+                break;
+            }
+            // --- NOVO CASE PARA O NOVO ESTADO ---
+            case STATE_SELECT_FILE: {
+                draw_file_selection_screen(file_selection, current_page);
+
+                if (pressed_buttons & SCE_CTRL_UP) { if (file_selection > 0) file_selection--; }
+                if (pressed_buttons & SCE_CTRL_DOWN) { if (file_selection < g_num_torrent_files - 1) file_selection++; }
+                if (pressed_buttons & SCE_CTRL_LTRIGGER) {
+                    if (current_page > 0) {
+                        current_page--;
+                        file_selection = current_page * ITEMS_PER_PAGE;
+                    }
+                }
+                if (pressed_buttons & SCE_CTRL_RTRIGGER) {
+                    int total_pages = (g_num_torrent_files + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+                    if (current_page < total_pages - 1) {
+                        current_page++;
+                        file_selection = current_page * ITEMS_PER_PAGE;
+                    }
+                }
+                if (pressed_buttons & SCE_CTRL_CIRCLE) {
+                    app_state = STATE_SHOW_RESULTS;
+                }
+                if (pressed_buttons & SCE_CTRL_CROSS) {
+                    g_selected_file_id = g_torrent_files[file_selection].id;
+                    start_download();
+                    app_state = STATE_DOWNLOADING;
+                }
+                
+                // Lógica de paginação automática
+                if (file_selection < current_page * ITEMS_PER_PAGE) current_page = file_selection / ITEMS_PER_PAGE;
+                if (file_selection >= (current_page + 1) * ITEMS_PER_PAGE) current_page = file_selection / ITEMS_PER_PAGE;
+
                 break;
             }
             case STATE_DOWNLOADING: {

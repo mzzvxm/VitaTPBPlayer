@@ -61,7 +61,6 @@ int rd_save_token_to_file(const char* path) {
     return 1;
 }
 
-// FUNÇÃO ATUALIZADA PARA USAR cJSON
 int rd_get_user_info(RdUserInfo *userInfo, char *error_out, size_t error_out_size) {
     memset(userInfo, 0, sizeof(RdUserInfo));
     if (!has_valid_token()) {
@@ -123,7 +122,6 @@ int rd_get_user_info(RdUserInfo *userInfo, char *error_out, size_t error_out_siz
     return success;
 }
 
-// FUNÇÃO ATUALIZADA PARA USAR cJSON
 int rd_add_magnet(const char *magnet, char *id_out, char *error_out, size_t error_out_size) {
     if (!magnet || !id_out) return 0;
     if (!has_valid_token()) {
@@ -176,40 +174,121 @@ int rd_add_magnet(const char *magnet, char *id_out, char *error_out, size_t erro
     return success;
 }
 
-int rd_select_all_files(const char *id, char *error_out, size_t error_out_size) {
+int rd_get_torrent_files(const char *id, RdFileInfo *files, int max_files, char *error_out, size_t error_out_size) {
+    if (!id || !has_valid_token()) {
+        snprintf(error_out, error_out_size, "ID ou Token invalido.");
+        return -1;
+    }
+    
+    CURL *curl = curl_easy_init();
+    if (!curl) return -1;
+    
+    char url[512];
+    snprintf(url, sizeof(url), "https://api.real-debrid.com/rest/1.0/torrents/info/%s", id);
+    
+    struct mem_buffer response = { .data = malloc(1), .size = 0 };
+    struct curl_slist *headers = NULL;
+    char auth_header[512];
+    snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", g_rd_token);
+    headers = curl_slist_append(headers, auth_header);
+    
+    curl_easy_setopt(curl, CURLOPT_CAINFO, "app0:cacert.pem");
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+    
+    CURLcode res = curl_easy_perform(curl);
+    long http_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    
+    int files_found = -1;
+    if (res == CURLE_OK && http_code == 200) {
+        cJSON *json = cJSON_Parse(response.data);
+        if (json) {
+            const cJSON *files_array = cJSON_GetObjectItemCaseSensitive(json, "files");
+            if (cJSON_IsArray(files_array)) {
+                files_found = 0;
+                int count = cJSON_GetArraySize(files_array);
+                for (int i = 0; i < count && i < max_files; i++) {
+                    cJSON *file_item = cJSON_GetArrayItem(files_array, i);
+                    const cJSON *file_id = cJSON_GetObjectItemCaseSensitive(file_item, "id");
+                    const cJSON *file_path = cJSON_GetObjectItemCaseSensitive(file_item, "path");
+                    const cJSON *file_bytes = cJSON_GetObjectItemCaseSensitive(file_item, "bytes");
+                    
+                    if (cJSON_IsNumber(file_id) && cJSON_IsString(file_path)) {
+                        files[files_found].id = file_id->valueint;
+                        strncpy(files[files_found].path, file_path->valuestring, sizeof(files[files_found].path) - 1);
+                        files[files_found].bytes = cJSON_IsNumber(file_bytes) ? file_bytes->valueint : 0;
+                        files_found++;
+                    }
+                }
+            } else {
+                 snprintf(error_out, error_out_size, "RD GetFiles: Array 'files' nao encontrado no JSON.");
+            }
+            cJSON_Delete(json);
+        } else {
+            snprintf(error_out, error_out_size, "RD GetFiles: Falha ao parsear JSON da API.");
+        }
+    } else {
+        snprintf(error_out, error_out_size, "RD GetFiles: API falhou (HTTP: %ld)", http_code);
+    }
+    
+    curl_slist_free_all(headers);
+    free(response.data);
+    curl_easy_cleanup(curl);
+    
+    return files_found;
+}
+
+// --- FUNÇÃO CORRIGIDA ---
+int rd_select_specific_file(const char *id, int file_id, char *error_out, size_t error_out_size) {
     if (!id || !has_valid_token()) {
         snprintf(error_out, error_out_size, "ID ou Token invalido.");
         return 0;
     }
     CURL *curl = curl_easy_init();
     if (!curl) return 0;
+    
     char url[512];
     snprintf(url, sizeof(url), "https://api.real-debrid.com/rest/1.0/torrents/selectFiles/%s", id);
+    
     struct curl_slist *headers = NULL;
     char auth_header[512];
     snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", g_rd_token);
     headers = curl_slist_append(headers, auth_header);
+    
+    char postfields[64];
+    snprintf(postfields, sizeof(postfields), "files=%d", file_id);
+    
     curl_easy_setopt(curl, CURLOPT_CAINFO, "app0:cacert.pem");
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, "files=all");
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, postfields);
+    
+    // LINHA PROBLEMÁTICA REMOVIDA
+    // curl_easy_setopt(curl, CURLOPT_NOBODY, 1L); 
+    
     CURLcode res = curl_easy_perform(curl);
     long http_code = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+    
     curl_easy_cleanup(curl);
     curl_slist_free_all(headers);
+    
     if (res != CURLE_OK) {
-        snprintf(error_out, error_out_size, "RD SelectFiles: %s", curl_easy_strerror(res));
+        snprintf(error_out, error_out_size, "RD SelectFile: %s", curl_easy_strerror(res));
         return 0;
     }
+    
     if (http_code == 202 || http_code == 204) {
         return 1;
     }
-    snprintf(error_out, error_out_size, "RD SelectFiles: API retornou erro HTTP %ld", http_code);
+    
+    snprintf(error_out, error_out_size, "RD SelectFile: API retornou erro HTTP %ld", http_code);
     return 0;
 }
 
-// FUNÇÃO JÁ ATUALIZADA (Mantida da etapa anterior)
 int rd_wait_for_torrent_ready(const char *id, RdTorrentInfo *torrentInfo, rd_progress_callback callback, char *error_out, size_t error_out_size) {
     if (!id || !has_valid_token()) {
         snprintf(error_out, error_out_size, "ID ou Token invalido.");
@@ -276,7 +355,6 @@ int rd_wait_for_torrent_ready(const char *id, RdTorrentInfo *torrentInfo, rd_pro
     return 0;
 }
 
-// FUNÇÃO FINAL ATUALIZADA PARA USAR cJSON
 int rd_unrestrict_link(const char *link, char *url_out, char *error_out, size_t error_out_size) {
     if (!link || !has_valid_token()) {
         snprintf(error_out, error_out_size, "Link intermediario ou Token invalido.");

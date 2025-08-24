@@ -18,6 +18,14 @@ typedef struct {
     char original_link[2048]; // Link intermediário
 } RdTorrentInfo;
 
+// NOVA ESTRUTURA: Para guardar informações de um único arquivo dentro de um torrent
+typedef struct {
+    int id;
+    char path[512];
+    long long bytes;
+} RdFileInfo;
+
+
 // Define um "ponteiro de função" para o nosso callback de progresso
 // Isso permitirá que a função de espera se comunique com a interface principal.
 typedef void (*rd_progress_callback)(int current_attempt, int max_attempts);
@@ -31,7 +39,13 @@ int rd_get_user_info(RdUserInfo *userInfo, char *error_out, size_t error_out_siz
 
 // Funções do fluxo de torrent
 int rd_add_magnet(const char *magnet, char *id_out, char *error_out, size_t error_out_size);
-int rd_select_all_files(const char *id, char *error_out, size_t error_out_size);
+
+// FUNÇÃO ANTIGA (rd_select_all_files) FOI REMOVIDA E SUBSTITUÍDA
+// NOVA FUNÇÃO: Pega a lista de arquivos de um torrent. Retorna o número de arquivos encontrados.
+int rd_get_torrent_files(const char *id, RdFileInfo *files, int max_files, char *error_out, size_t error_out_size);
+// NOVA FUNÇÃO: Seleciona um arquivo específico para download.
+int rd_select_specific_file(const char *id, int file_id, char *error_out, size_t error_out_size);
+
 // A função agora aceita um callback para reportar o progresso
 int rd_wait_for_torrent_ready(const char *id, RdTorrentInfo *torrentInfo, rd_progress_callback callback, char *error_out, size_t error_out_size);
 int rd_unrestrict_link(const char *link, char *url_out, char *error_out, size_t error_out_size);
