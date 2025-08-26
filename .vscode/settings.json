@@ -2,6 +2,7 @@
     "files.associations": {
         "vita2d.h": "c",
         "http.h": "c",
-        "dirent.h": "c"
+        "dirent.h": "c",
+        "realdebrid.h": "c"
     }
 }
