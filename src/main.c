@@ -10,6 +10,8 @@
 #include <psp2/touch.h>
 #include <psp2/net/net.h>
 #include <psp2/net/netctl.h>
+#include <psp2/apputil.h>       // Necessário para inicialização correta do sistema
+#include <psp2/common_dialog.h> // Necessário para o sistema de diálogos (IME)
 
 #include <stdio.h>
 #include <string.h>
@@ -20,7 +22,7 @@
 #include "tpb_scraper.h"
 #include "realdebrid.h"
 #include "player.h"
-#include "osk.h"
+#include "osk.h" // <<< VOLTAMOS PARA OSK.H (Nova implementação)
 #include "ui.h"
 
 #define MAX_RESULTS 50
@@ -28,6 +30,7 @@
 #define ITEMS_PER_PAGE 12
 #define TOKEN_CONFIG_PATH "ux0:data/VitaTPBPlayer/token.txt"
 #define DOWNLOAD_FOLDER "ux0:data/VitaTPBPlayer/"
+#define MAX_INPUT_LEN 256 
 
 typedef enum {
     STATE_MAIN_MENU,
@@ -40,9 +43,8 @@ typedef enum {
     STATE_TOKEN_SERVER
 } AppState;
 
-static char search_query[OSK_INPUT_MAX_LENGTH] = "matrix";
+static char search_query[MAX_INPUT_LEN] = "matrix";
 static char error_message[256] = "";
-static char temp_osk_buffer[OSK_INPUT_MAX_LENGTH] = "";
 static AppState state_before_osk = STATE_MAIN_MENU;
 
 static RdUserInfo g_user_info;
@@ -167,16 +169,22 @@ static void start_download() {
 }
 
 int main(int argc, char *argv[]) {
+    // 1. INICIALIZAÇÃO DE SISTEMA 
+    sceAppUtilInit(&(SceAppUtilInitParam){}, &(SceAppUtilBootParam){});
+    sceCommonDialogSetConfigParam(&(SceCommonDialogConfigParam){});
+
     // Módulos e rede
     sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
     sceSysmoduleLoadModule(SCE_SYSMODULE_HTTP);
+    // Nota: O módulo IME é carregado sob demanda no novo osk.c, mas não faz mal carregar aqui também
+    sceSysmoduleLoadModule(SCE_SYSMODULE_IME); 
 
     static char net_memory[1024 * 1024];
     SceNetInitParam net_init_param = { .memory = net_memory, .size = sizeof(net_memory), .flags = 0 };
     sceNetInit(&net_init_param);
     sceNetCtlInit();
 
-    // UI centralizada (fonte/tema estão na UI)
+    // UI centralizada
     if (!ui_init("app0:font.ttf", "ux0:app/VTPB00001/font.ttf")) {
         sceKernelExitProcess(0);
         return 0;
@@ -185,33 +193,35 @@ int main(int argc, char *argv[]) {
     g_progress_mutex = sceKernelCreateMutex("progress_mutex", 0, 0, NULL);
     sceIoMkdir(DOWNLOAD_FOLDER, 0777);
     rd_load_token_from_file(TOKEN_CONFIG_PATH);
-
+    
     // Touch (front)
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
 
     AppState app_state = STATE_MAIN_MENU;
     TpbResult results[MAX_RESULTS];
     int num_results = 0;
-
     int menu_selection = 0;
     int settings_selection = 0;
     int results_selection = 0;
     int file_selection = 0;
     int current_page = 0;
-
     SceCtrlData pad;
     unsigned int old_buttons = 0;
 
     SceTouchData touch_data;
     int touch_x = -1, touch_y = -1, touch_held = 0;
 
+    int input_initialized = 0; // Flag para controlar se o IME já foi aberto
+
     while (1) {
-        // Input não bloqueante (polling)
-        sceCtrlPeekBufferPositive(0, &pad, 1);                   // docs: SceCtrl "peek" (polling) :contentReference[oaicite:0]{index=0}
+        sceCommonDialogUpdate(&(SceCommonDialogUpdateParam){});
+
+        // Input polling
+        sceCtrlPeekBufferPositive(0, &pad, 1);
         unsigned int pressed_buttons = pad.buttons & ~old_buttons;
         old_buttons = pad.buttons;
 
-        sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch_data, 1);      // docs: SceTouch peek/ports :contentReference[oaicite:1]{index=1}
+        sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch_data, 1);
         int touch_tapped = 0;
         if (touch_data.reportNum > 0 && !touch_held) {
             touch_held = 1;
@@ -221,16 +231,16 @@ int main(int argc, char *argv[]) {
             touch_held = 0;
             touch_tapped = 1;
         } else if (touch_data.reportNum == 0) {
-            touch_x = -1; touch_y = -1;
+            touch_x = -1;
+            touch_y = -1;
         }
 
-        
-        ui_begin_frame();  // init/clear/start → draw → end/swap (padrão libvita2d) :contentReference[oaicite:2]{index=2}
+        ui_begin_frame();
 
         switch (app_state) {
             case STATE_MAIN_MENU: {
+                input_initialized = 0;
                 ui_draw_main_menu(menu_selection);
-
                 if (touch_tapped) {
                     if (touch_x > 40 && touch_x < 400 && touch_y > 90  && touch_y < 120) { menu_selection = 0; pressed_buttons |= SCE_CTRL_CROSS; }
                     else if (touch_x > 40 && touch_x < 400 && touch_y > 120 && touch_y < 150) { menu_selection = 1; pressed_buttons |= SCE_CTRL_CROSS; }
@@ -240,95 +250,116 @@ int main(int argc, char *argv[]) {
                 if (pressed_buttons & SCE_CTRL_UP)   { if (menu_selection > 0) menu_selection--; }
                 if (pressed_buttons & SCE_CTRL_DOWN) { if (menu_selection < 2) menu_selection++; }
                 if (pressed_buttons & SCE_CTRL_CROSS) {
-                    if (menu_selection == 0) { state_before_osk = app_state; app_state = STATE_INPUT; }
-                    else if (menu_selection == 1) { settings_selection = 0; app_state = STATE_SETTINGS; }
+                    if (menu_selection == 0) { 
+                        state_before_osk = app_state;
+                        app_state = STATE_INPUT; 
+                    }
+                    else if (menu_selection == 1) { 
+                        settings_selection = 0;
+                        app_state = STATE_SETTINGS; 
+                    }
                     else if (menu_selection == 2) goto exit_loop;
                 }
                 break;
             }
 
             case STATE_INPUT: {
-                if (state_before_osk == STATE_SETTINGS) {
-                    strncpy(temp_osk_buffer, rd_get_token(), sizeof(temp_osk_buffer)-1);
-                } else {
-                    strncpy(temp_osk_buffer, search_query, sizeof(temp_osk_buffer)-1);
-                }
-                temp_osk_buffer[sizeof(temp_osk_buffer) - 1] = '\0';
-                osk_init(temp_osk_buffer);
-
-                while (app_state == STATE_INPUT) {
-                    sceCtrlPeekBufferPositive(0, &pad, 1);
-                    if (osk_update(&pad)) {
-                        if (state_before_osk == STATE_SETTINGS) {
-                            rd_set_token(temp_osk_buffer);
-                            app_state = STATE_SETTINGS;
-                        } else {
-                            strncpy(search_query, temp_osk_buffer, sizeof(search_query)-1);
-                            search_query[sizeof(search_query) - 1] = '\0';
-
-                            ui_begin_frame();
-                            ui_draw_status("Buscando...", search_query);
-                            ui_end_frame();
-
-                            num_results = tpb_search(search_query, results, MAX_RESULTS, error_message, sizeof(error_message));
-                            if (num_results < 0) {
-                                app_state = STATE_ERROR;
-                            } else {
-                                results_selection = 0;
-                                current_page = 0;
-                                app_state = STATE_SHOW_RESULTS;
-                            }
-                        }
-                    } else if ((pad.buttons & ~old_buttons) & SCE_CTRL_TRIANGLE) {
-                        app_state = state_before_osk;
-                    }
-                    old_buttons = pad.buttons;
-
-                    ui_begin_frame();
-                    osk_draw(ui_font(), temp_osk_buffer);
-                    ui_end_frame();
-                }
-                continue;
+            // ========== CÓDIGO NOVO ==========
+            if (!input_initialized) {
+                const char *title = (state_before_osk == STATE_SETTINGS) 
+                    ? "Insira o Token" 
+                    : "Buscar Torrent";
+                const char *initial = (state_before_osk == STATE_SETTINGS) 
+                    ? rd_get_token() 
+                    : search_query;
+                
+                osk_init_ime(title, initial);
+                input_initialized = 1;
             }
 
+            // UI de fundo (aparece atrás do teclado do sistema)
+            ui_draw_status("Teclado Aberto", "Digite no teclado do sistema...");
+
+            // Processa o IME
+            OskStatus status = osk_update_ime();
+            
+            if (status == OSK_STATUS_FINISHED) {
+                char *text_result = osk_get_text();
+                
+                if (state_before_osk == STATE_SETTINGS) {
+                    rd_set_token(text_result);
+                    app_state = STATE_SETTINGS;
+                } else {
+                    strncpy(search_query, text_result, sizeof(search_query)-1);
+                    search_query[sizeof(search_query) - 1] = '\0';
+
+                    // Feedback visual
+                    ui_end_frame();
+                    ui_begin_frame();
+                    ui_draw_status("Buscando...", search_query);
+                    ui_end_frame();
+                    ui_begin_frame(); 
+
+                    num_results = tpb_search(search_query, results, MAX_RESULTS, 
+                                            error_message, sizeof(error_message));
+                    if (num_results < 0) {
+                        app_state = STATE_ERROR;
+                    } else {
+                        results_selection = 0;
+                        current_page = 0;
+                        app_state = STATE_SHOW_RESULTS;
+                    }
+                }
+                input_initialized = 0;
+                
+            } else if (status == OSK_STATUS_CANCELED || status == OSK_STATUS_ERROR) {
+                app_state = state_before_osk;
+                input_initialized = 0;
+            }
+            // ========== FIM DO CÓDIGO NOVO ==========
+            break;
+        }
+
             case STATE_SETTINGS: {
-                // Monta masked_token
+                input_initialized = 0;
                 char masked_token[64] = "Nao configurado";
                 const char* token = rd_get_token();
                 if (token && strlen(token) > 8)
                     snprintf(masked_token, sizeof(masked_token), "%.4s************************%.4s", token, token + strlen(token) - 4);
                 else if (token && strlen(token) > 0)
                     snprintf(masked_token, sizeof(masked_token), "Token muito curto");
-
+                
                 ui_draw_settings_screen(settings_selection, g_settings_info_valid ? &g_user_info : NULL, masked_token, g_settings_status);
 
                 if (pressed_buttons & SCE_CTRL_UP)   { if (settings_selection > 0) settings_selection--; }
                 if (pressed_buttons & SCE_CTRL_DOWN) { if (settings_selection < 3) settings_selection++; }
                 if (pressed_buttons & SCE_CTRL_CROSS) {
                     switch (settings_selection) {
-                        case 0:
+                        case 0: // Editar Token Manualmente
                             state_before_osk = app_state;
                             app_state = STATE_INPUT;
                             break;
-                        case 1:
+                        case 1: // Testar Token
                             g_settings_info_valid = 0;
                             snprintf(g_settings_status, sizeof(g_settings_status), "Testando token...");
-
+                            
+                            ui_end_frame(); 
                             ui_begin_frame();
                             ui_draw_settings_screen(settings_selection, g_settings_info_valid ? &g_user_info : NULL, masked_token, g_settings_status);
                             ui_end_frame();
+                            ui_begin_frame();
 
                             if (rd_get_user_info(&g_user_info, g_settings_status, sizeof(g_settings_status))) {
                                 snprintf(g_settings_status, sizeof(g_settings_status), "Teste bem-sucedido!");
                                 g_settings_info_valid = 1;
                             }
                             break;
-                        case 2:
+                        case 2: // Servidor Wi-Fi
                             get_ip_address();
                             token_server_start(8080);
                             app_state = STATE_TOKEN_SERVER;
                             break;
-                        case 3:
+                        case 3: // Salvar e Sair
                             rd_save_token_to_file(TOKEN_CONFIG_PATH);
                             app_state = STATE_MAIN_MENU;
                             break;
@@ -349,12 +380,12 @@ int main(int argc, char *argv[]) {
             }
 
             case STATE_SHOW_RESULTS: {
+                input_initialized = 0;
                 if (num_results == 0) {
                     ui_draw_results(search_query, results, 0, 0, 0, ITEMS_PER_PAGE);
                     if (pressed_buttons & SCE_CTRL_CIRCLE) app_state = STATE_MAIN_MENU;
                 } else {
                     ui_draw_results(search_query, results, num_results, results_selection, current_page, ITEMS_PER_PAGE);
-
                     if (pressed_buttons & SCE_CTRL_UP)   { if (results_selection > 0) results_selection--; }
                     if (pressed_buttons & SCE_CTRL_DOWN) { if (results_selection < num_results - 1) results_selection++; }
                     if (pressed_buttons & SCE_CTRL_LTRIGGER) {
@@ -365,17 +396,26 @@ int main(int argc, char *argv[]) {
                         if (current_page < total_pages - 1) { current_page++; results_selection = current_page * ITEMS_PER_PAGE; }
                     }
                     if (pressed_buttons & SCE_CTRL_CIRCLE) app_state = STATE_MAIN_MENU;
-
                     if (pressed_buttons & SCE_CTRL_CROSS) {
                         // Adiciona magnet, pega arquivos
-                        ui_begin_frame(); ui_draw_status("Processando...", "Adicionando magnet ao Real-Debrid..."); ui_end_frame();
+                        ui_end_frame();
+                        ui_begin_frame();
+                        ui_draw_status("Processando...", "Adicionando magnet ao Real-Debrid..."); 
+                        ui_end_frame();
+                        ui_begin_frame();
+
                         if (!rd_add_magnet(results[results_selection].magnet, g_current_torrent_id, error_message, sizeof(error_message))) {
-                            app_state = STATE_ERROR; break;
+                            app_state = STATE_ERROR;
+                            break;
                         }
 
-                        ui_begin_frame(); ui_draw_status("Processando...", "Buscando lista de arquivos do torrent..."); ui_end_frame();
-                        g_num_torrent_files = rd_get_torrent_files(g_current_torrent_id, g_torrent_files, MAX_FILES_PER_TORRENT, error_message, sizeof(error_message));
+                        ui_end_frame();
+                        ui_begin_frame();
+                        ui_draw_status("Processando...", "Buscando lista de arquivos do torrent..."); 
+                        ui_end_frame();
+                        ui_begin_frame();
 
+                        g_num_torrent_files = rd_get_torrent_files(g_current_torrent_id, g_torrent_files, MAX_FILES_PER_TORRENT, error_message, sizeof(error_message));
                         if (g_num_torrent_files < 0) {
                             app_state = STATE_ERROR;
                         } else if (g_num_torrent_files == 0) {
@@ -392,7 +432,10 @@ int main(int argc, char *argv[]) {
                         }
                     }
 
-                    if (pressed_buttons & SCE_CTRL_TRIANGLE) { state_before_osk = STATE_MAIN_MENU; app_state = STATE_INPUT; }
+                    if (pressed_buttons & SCE_CTRL_TRIANGLE) { 
+                        state_before_osk = STATE_MAIN_MENU;
+                        app_state = STATE_INPUT; 
+                    }
 
                     if (results_selection < current_page * ITEMS_PER_PAGE) current_page = results_selection / ITEMS_PER_PAGE;
                     if (results_selection >= (current_page + 1) * ITEMS_PER_PAGE) current_page = results_selection / ITEMS_PER_PAGE;
@@ -402,7 +445,6 @@ int main(int argc, char *argv[]) {
 
             case STATE_SELECT_FILE: {
                 ui_draw_file_selection(g_torrent_files, g_num_torrent_files, file_selection, current_page, ITEMS_PER_PAGE);
-
                 if (pressed_buttons & SCE_CTRL_UP)   { if (file_selection > 0) file_selection--; }
                 if (pressed_buttons & SCE_CTRL_DOWN) { if (file_selection < g_num_torrent_files - 1) file_selection++; }
                 if (pressed_buttons & SCE_CTRL_LTRIGGER) {
@@ -413,7 +455,6 @@ int main(int argc, char *argv[]) {
                     if (current_page < total_pages - 1) { current_page++; file_selection = current_page * ITEMS_PER_PAGE; }
                 }
                 if (pressed_buttons & SCE_CTRL_CIRCLE) app_state = STATE_SHOW_RESULTS;
-
                 if (pressed_buttons & SCE_CTRL_CROSS) {
                     g_selected_file_id = g_torrent_files[file_selection].id;
                     start_download();
@@ -438,7 +479,6 @@ int main(int argc, char *argv[]) {
                 sceKernelUnlockMutex(g_progress_mutex, 1);
 
                 ui_draw_progress(&p);
-
                 if (pressed_buttons & SCE_CTRL_CIRCLE) {
                     sceKernelLockMutex(g_progress_mutex, 1, NULL);
                     g_progress.is_cancelled = 1;
@@ -476,6 +516,7 @@ exit_loop:
 
     sceSysmoduleUnloadModule(SCE_SYSMODULE_HTTP);
     sceSysmoduleUnloadModule(SCE_SYSMODULE_NET);
+    sceSysmoduleUnloadModule(SCE_SYSMODULE_IME);
 
     ui_shutdown();
     sceKernelDeleteMutex(g_progress_mutex);

@@ -1,119 +1,177 @@
-#include <stdio.h>
+#include <psp2/ime_dialog.h>
+#include <psp2/common_dialog.h>
+#include <psp2/types.h>
 #include <string.h>
-#include <ctype.h>
+#include <wchar.h>
 #include "osk.h"
 
-#define OSK_FONT_SIZE 24.0f
-#define OSK_KEY_SPACING_X 38
-#define OSK_KEY_SPACING_Y 38
+// Buffer para o texto de entrada (UTF-16)
+static uint16_t g_input_text[SCE_IME_DIALOG_MAX_TEXT_LENGTH + 1];
+static uint16_t g_initial_text[SCE_IME_DIALOG_MAX_TEXT_LENGTH + 1];
+static uint16_t g_title_text[SCE_IME_DIALOG_MAX_TITLE_LENGTH + 1];
 
-static int cursor_x = 0;
-static int cursor_y = 0;
-static unsigned int old_buttons = 0;
-static char* text_buffer;
-static int is_caps = 0;
+// Buffer para resultado em UTF-8 (para retornar ao usuário)
+static char g_result_text[MAX_INPUT_LEN];
 
-static const char* keyboard_layout_lower[] = {
-    "1234567890",
-    "qwertyuiop",
-    "asdfghjkl",
-    "zxcvbnm,.-_",
-    " "
-};
+// Flag para saber se o IME foi inicializado
+static int g_ime_initialized = 0;
 
-static const char* keyboard_layout_upper[] = {
-    "!@#$%^&*()",
-    "QWERTYUIOP",
-    "ASDFGHJKL",
-    "ZXCVBNM,.-_",
-    " "
-};
-
-static const int layout_rows = 5;
-
-void osk_init(char* initial_text) {
-    cursor_x = 0;
-    cursor_y = 0;
-    old_buttons = 0;
-    text_buffer = initial_text;
-    is_caps = 0;
-}
-
-int osk_update(SceCtrlData *pad) {
-    unsigned int pressed_buttons = pad->buttons & ~old_buttons;
-    old_buttons = pad->buttons;
-
-    // MODIFICADO: Gatilho R para alternar entre maiúsculas e minúsculas
-    if (pressed_buttons & SCE_CTRL_RTRIGGER) {
-        is_caps = !is_caps;
-    }
-
-    const char** current_layout = is_caps ? keyboard_layout_upper : keyboard_layout_lower;
-
-    if (pressed_buttons & SCE_CTRL_UP) {
-        if (cursor_y > 0) cursor_y--;
-        if (cursor_x >= strlen(current_layout[cursor_y])) {
-            cursor_x = strlen(current_layout[cursor_y]) - 1;
-        }
-    }
-    if (pressed_buttons & SCE_CTRL_DOWN) {
-        if (cursor_y < layout_rows - 1) cursor_y++;
-        if (cursor_x >= strlen(current_layout[cursor_y])) {
-            cursor_x = strlen(current_layout[cursor_y]) - 1;
-        }
-    }
-    if (pressed_buttons & SCE_CTRL_LEFT) {
-        if (cursor_x > 0) cursor_x--;
-    }
-    if (pressed_buttons & SCE_CTRL_RIGHT) {
-        if (cursor_x < strlen(current_layout[cursor_y]) - 1) cursor_x++;
-    }
-
-    if (pressed_buttons & SCE_CTRL_CROSS) {
-        size_t len = strlen(text_buffer);
-        if (len < OSK_INPUT_MAX_LENGTH - 1) {
-            text_buffer[len] = current_layout[cursor_y][cursor_x];
-            text_buffer[len + 1] = '\0';
-        }
-    }
-
-    if (pressed_buttons & SCE_CTRL_CIRCLE) {
-        size_t len = strlen(text_buffer);
-        if (len > 0) {
-            text_buffer[len - 1] = '\0';
-        }
-    }
-
-    if (pressed_buttons & SCE_CTRL_START) {
-        return 1;
-    }
-
-    return 0;
-}
-
-void osk_draw(vita2d_font *font, char *buffer) {
-    vita2d_font_draw_text(font, 40, 40, RGBA8(255, 255, 255, 255), 20.0f, "Digite o texto:");
-    vita2d_font_draw_textf(font, 40, 80, RGBA8(255, 255, 255, 255), 20.0f, "[%s_]", buffer);
-
-    const char** current_layout = is_caps ? keyboard_layout_upper : keyboard_layout_lower;
-
-    int y_pos = 180;
-    for (int y = 0; y < layout_rows; y++) {
-        int x_pos = (960 - (strlen(current_layout[y]) * OSK_KEY_SPACING_X)) / 2;
-
-        for (int x = 0; x < strlen(current_layout[y]); x++) {
-            unsigned int color = (y == cursor_y && x == cursor_x) ? RGBA8(255, 255, 0, 255) : RGBA8(255, 255, 255, 255);
-
-            if (y == 4) {
-                 vita2d_draw_rectangle(x_pos, y_pos - 20, OSK_KEY_SPACING_X * 5, 30, color);
+// Converte UTF-8 para UTF-16
+static void utf8_to_utf16(const char* utf8, uint16_t* utf16, size_t max_len) {
+    size_t i = 0;
+    size_t j = 0;
+    
+    while (utf8[i] && j < max_len - 1) {
+        unsigned char c = (unsigned char)utf8[i];
+        
+        if (c < 0x80) {
+            // ASCII de 1 byte
+            utf16[j++] = (uint16_t)c;
+            i++;
+        } else if ((c & 0xE0) == 0xC0) {
+            // UTF-8 de 2 bytes
+            if (utf8[i + 1]) {
+                utf16[j++] = (uint16_t)(((c & 0x1F) << 6) | (utf8[i + 1] & 0x3F));
+                i += 2;
             } else {
-                 vita2d_font_draw_textf(font, x_pos, y_pos, color, OSK_FONT_SIZE, "%c", current_layout[y][x]);
+                break;
             }
-            x_pos += OSK_KEY_SPACING_X;
+        } else if ((c & 0xF0) == 0xE0) {
+            // UTF-8 de 3 bytes
+            if (utf8[i + 1] && utf8[i + 2]) {
+                utf16[j++] = (uint16_t)(((c & 0x0F) << 12) | 
+                                        ((utf8[i + 1] & 0x3F) << 6) | 
+                                        (utf8[i + 2] & 0x3F));
+                i += 3;
+            } else {
+                break;
+            }
+        } else {
+            // Ignora caracteres UTF-8 de 4+ bytes (não suportados pelo Vita)
+            i++;
         }
-        y_pos += OSK_KEY_SPACING_Y;
     }
+    utf16[j] = 0;
+}
 
-    // MODIFICADO: Texto de ajuda atualizado para mostrar (R) Caps
-    vita2d_font_draw_text(font, 40, 480, RGBA8(180, 180, 180, 255), 18.0f, "(X) Adicionar | (O) Apagar | (R) Caps | (START) Confirmar");
+// Converte UTF-16 para UTF-8
+static void utf16_to_utf8(const uint16_t* utf16, char* utf8, size_t max_len) {
+    size_t i = 0;
+    size_t j = 0;
+    
+    while (utf16[i] && j < max_len - 4) {
+        uint16_t c = utf16[i];
+        
+        if (c < 0x80) {
+            // ASCII de 1 byte
+            utf8[j++] = (char)c;
+        } else if (c < 0x800) {
+            // UTF-8 de 2 bytes
+            utf8[j++] = (char)(0xC0 | (c >> 6));
+            utf8[j++] = (char)(0x80 | (c & 0x3F));
+        } else {
+            // UTF-8 de 3 bytes
+            utf8[j++] = (char)(0xE0 | (c >> 12));
+            utf8[j++] = (char)(0x80 | ((c >> 6) & 0x3F));
+            utf8[j++] = (char)(0x80 | (c & 0x3F));
+        }
+        i++;
+    }
+    utf8[j] = 0;
+}
+
+void osk_init_ime(const char* title, const char* initial_text) {
+    // Se já foi inicializado, termina primeiro
+    if (g_ime_initialized) {
+        sceImeDialogTerm();
+        g_ime_initialized = 0;
+    }
+    
+    // Limpa os buffers
+    memset(g_input_text, 0, sizeof(g_input_text));
+    memset(g_initial_text, 0, sizeof(g_initial_text));
+    memset(g_title_text, 0, sizeof(g_title_text));
+    
+    // Converte título e texto inicial de UTF-8 para UTF-16
+    utf8_to_utf16(title, g_title_text, SCE_IME_DIALOG_MAX_TITLE_LENGTH);
+    utf8_to_utf16(initial_text, g_initial_text, SCE_IME_DIALOG_MAX_TEXT_LENGTH);
+    
+    // Copia o texto inicial para o buffer de entrada
+    memcpy(g_input_text, g_initial_text, sizeof(g_input_text));
+    
+    // Configura os parâmetros do IME Dialog
+    SceImeDialogParam param;
+    sceImeDialogParamInit(&param);
+    
+    param.supportedLanguages = SCE_IME_LANGUAGE_ENGLISH | 
+                               SCE_IME_LANGUAGE_PORTUGUESE | 
+                               SCE_IME_LANGUAGE_SPANISH |
+                               SCE_IME_LANGUAGE_FRENCH |
+                               SCE_IME_LANGUAGE_GERMAN;
+    param.languagesForced = SCE_FALSE;
+    param.type = SCE_IME_TYPE_DEFAULT;
+    param.option = 0;
+    param.dialogMode = SCE_IME_DIALOG_DIALOG_MODE_WITH_CANCEL;
+    param.textBoxMode = SCE_IME_DIALOG_TEXTBOX_MODE_DEFAULT;
+    param.title = g_title_text;
+    param.maxTextLength = SCE_IME_DIALOG_MAX_TEXT_LENGTH;
+    param.initialText = g_initial_text;
+    param.inputTextBuffer = g_input_text;
+    
+    // Inicializa o diálogo
+    int ret = sceImeDialogInit(&param);
+    if (ret >= 0) {
+        g_ime_initialized = 1;
+    }
+}
+
+OskStatus osk_update_ime(void) {
+    if (!g_ime_initialized) {
+        return OSK_STATUS_ERROR;
+    }
+    
+    // Verifica o status do diálogo
+    SceCommonDialogStatus status = sceImeDialogGetStatus();
+    
+    switch (status) {
+        case SCE_COMMON_DIALOG_STATUS_RUNNING:
+            // Diálogo ainda está aberto
+            return OSK_STATUS_RUNNING;
+            
+        case SCE_COMMON_DIALOG_STATUS_FINISHED:
+            // Diálogo foi finalizado, pega o resultado
+            {
+                SceImeDialogResult result;
+                memset(&result, 0, sizeof(SceImeDialogResult));
+                sceImeDialogGetResult(&result);
+                
+                // Termina o diálogo
+                sceImeDialogTerm();
+                g_ime_initialized = 0;
+                
+                // Verifica se o usuário confirmou ou cancelou
+                if (result.button == SCE_IME_DIALOG_BUTTON_ENTER) {
+                    // Converte o texto UTF-16 para UTF-8 e armazena
+                    utf16_to_utf8(g_input_text, g_result_text, sizeof(g_result_text));
+                    return OSK_STATUS_FINISHED;
+                } else {
+                    // Usuário cancelou
+                    g_result_text[0] = '\0';
+                    return OSK_STATUS_CANCELED;
+                }
+            }
+            
+        default:
+            // Erro ou estado inválido
+            if (g_ime_initialized) {
+                sceImeDialogTerm();
+                g_ime_initialized = 0;
+            }
+            g_result_text[0] = '\0';
+            return OSK_STATUS_ERROR;
+    }
+}
+
+char* osk_get_text(void) {
+    return g_result_text;
 }

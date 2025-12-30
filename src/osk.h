@@ -1,13 +1,33 @@
 #ifndef OSK_H
 #define OSK_H
 
-#include <psp2/ctrl.h>
-#include <vita2d.h>
+#define MAX_INPUT_LEN 256
 
-#define OSK_INPUT_MAX_LENGTH 64
+// Status do IME Dialog
+typedef enum {
+    OSK_STATUS_RUNNING,   // Diálogo ainda aberto
+    OSK_STATUS_FINISHED,  // Usuário confirmou (Enter)
+    OSK_STATUS_CANCELED,  // Usuário cancelou
+    OSK_STATUS_ERROR      // Erro
+} OskStatus;
 
-void osk_init(char *initial_text);
-int osk_update(SceCtrlData *pad);
-void osk_draw(vita2d_font *font, char *buffer);
+/**
+ * Inicializa e abre o IME Dialog nativo do PS Vita
+ * @param title Título do diálogo (em UTF-8)
+ * @param initial_text Texto inicial do campo de entrada (em UTF-8)
+ */
+void osk_init_ime(const char* title, const char* initial_text);
+
+/**
+ * Atualiza o estado do IME Dialog
+ * @return Status atual do diálogo
+ */
+OskStatus osk_update_ime(void);
+
+/**
+ * Obtém o texto digitado pelo usuário (válido após OSK_STATUS_FINISHED)
+ * @return Ponteiro para o texto em UTF-8
+ */
+char* osk_get_text(void);
 
 #endif // OSK_H

@@ -99,6 +99,7 @@ void ui_begin_frame(void) {
 
 void ui_end_frame(void) {
     vita2d_end_drawing();
+    vita2d_common_dialog_update();
     vita2d_swap_buffers();
 }
 
