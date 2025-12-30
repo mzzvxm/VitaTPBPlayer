@@ -1,6 +1,6 @@
 TITLE_ID = VTPB00001
 TARGET   = VitaTPBPlayer
-OBJS     = main.o ui.o player.o realdebrid.o tpb_scraper.o token_server.o stream_manager.o cJSON.o osk.o
+OBJS     = main.o ui.o player.o realdebrid.o tpb_scraper.o token_server.o stream_manager.o cJSON.o osk.o i18n.o
 
 LIBS = -lvita2d -lSceAppUtil_stub -lSceCommonDialog_stub -lSceGxm_stub -lSceDisplay_stub \
        -lSceSysmodule_stub -lSceCtrl_stub -lSceIme_stub -lSceTouch_stub -lScePgf_stub -lScePvf_stub \
@@ -23,6 +23,10 @@ $(TARGET).vpk: eboot.bin param.sfo
 	vita-pack-vpk -s param.sfo -b eboot.bin \
 		--add resources/font.ttf=font.ttf \
 		--add resources/cacert.pem=cacert.pem \
+		--add sce_sys/icon0.png=sce_sys/icon0.png \
+		--add sce_sys/livearea/contents/bg.png=sce_sys/livearea/contents/bg.png \
+		--add sce_sys/livearea/contents/startup.png=sce_sys/livearea/contents/startup.png \
+		--add sce_sys/livearea/contents/template.xml=sce_sys/livearea/contents/template.xml \
 		$@
 
 eboot.bin: $(TARGET).velf
