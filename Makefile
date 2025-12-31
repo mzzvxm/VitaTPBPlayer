@@ -1,11 +1,20 @@
 TITLE_ID = VTPB00001
 TARGET   = VitaTPBPlayer
-OBJS     = main.o ui.o player.o realdebrid.o tpb_scraper.o token_server.o stream_manager.o cJSON.o osk.o i18n.o
+OBJS     = main.o \
+ui.o \
+player.o \
+realdebrid.o \
+tpb_scraper.o \
+token_server.o \
+stream_manager.o \
+cJSON.o \
+osk.o \
+i18n.o \
 
 LIBS = -lvita2d -lSceAppUtil_stub -lSceCommonDialog_stub -lSceGxm_stub -lSceDisplay_stub \
        -lSceSysmodule_stub -lSceCtrl_stub -lSceIme_stub -lSceTouch_stub -lScePgf_stub -lScePvf_stub \
        -lfreetype -lpng -ljpeg -lz -lbz2 -lm -lc \
-       -lcurl -lssl -lcrypto -lSceAppMgr_stub \
+       -lcurl -lSceAvPlayer_stub -lssl -lcrypto -lSceAppMgr_stub \
        -lSceNet_stub -lSceNetCtl_stub -lpthread
 
 PREFIX  = arm-vita-eabi
