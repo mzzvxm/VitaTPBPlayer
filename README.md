@@ -1,79 +1,97 @@
-# VitaTPBPlayer
+# VitaTPBPlayer  
+![Status](https://img.shields.io/badge/Status-In%20Development-yellow) ![Platform](https://img.shields.io/badge/Platform-PS%20Vita-blue) ![Language](https://img.shields.io/badge/Language-C-green)
 
-![Status](https://img.shields.io/badge/status-in%20development-yellow)
-![Platform](https://img.shields.io/badge/platform-PS%20Vita-blue)
-![Language](https://img.shields.io/badge/language-C-orange)
+![Project Preview](https://i.postimg.cc/qq8sNQrG/Vita-TPBPlayer.png)
 
-A functional torrent client for the PlayStation Vita that uses The Pirate Bay and Real-Debrid APIs to search for and prepare files for download.
+> **Disclaimer:** This is a **homebrew** PlayStation Vita project created for educational purposes only.  
+> It is **not affiliated** with The Pirate Bay or Real-Debrid. Usage is entirely the user's responsibility.
 
-**Note:** This project is currently in a transitional phase. The graphical interface has been modernized, but background download implementation is still in progress.
+---
 
-### Overview
+## About  
+**VitaTPBPlayer** is a PlayStation Vita homebrew application that allows users to **search for torrents directly on the device**, send magnet links to **Real-Debrid** to generate direct download links, and **download content locally** for playback on the Vita.
 
-VitaTPBPlayer allows you to search for torrents directly on your PS Vita, use Real-Debrid’s power to get a direct download link, and then download the file to your console.
+The main goal of this project is to provide an **all-in-one torrent workflow** on the PS Vita:  
+**Search → Resolve → Download → Play**, without relying on external devices.
 
-The project was recently refactored to use the `libvita2d` graphics library, resulting in a much more stable and visually clean interface compared to earlier versions.
+---
 
-## What does it do?
+##  Tech Stack  
+- **Language:** C  
+- **SDK:** VitaSDK  
+- **Networking:** `libcurl`  
+- **UI:** Native PS Vita framebuffer rendering  
+- **APIs & Services:**  
+  - The Pirate Bay (torrent search)  
+  - Real-Debrid (magnet link resolving)
 
-The idea behind VitaTPBPlayer is to create a simple flow for watching content on the Vita:
+---
 
-1. **Search**: The user types a query using an on-screen virtual keyboard.
-2. **Results List**: The app searches torrents on The Pirate Bay and displays a list of results with name, seeders, and leechers.
-3. **Selection**: The user selects an item from the list.
-4. **"Debriding"**: The torrent’s magnet link is sent to the Real-Debrid API.
-5. **Download**: The app waits for Real-Debrid to prepare the file, then downloads the direct link to the memory card (`ux0:data/movie.mp4`).
-6. **Playback**: After the download finishes, it attempts to launch an external video player to play the downloaded file.
+##  Features  
 
-## Current (and Planned) Features
+###  Torrent Search  
+- Search torrents using The Pirate Bay  
+- Displays seeders and leechers  
+- On-screen keyboard for text input  
+- Pagination support for results  
 
-* [x] Search via The Pirate Bay API.
-* [x] Integration with Real-Debrid API (add magnet, check status, get link).
-* [x] File download via `libcurl`.
-* [x] Simple text-based interface using a custom `debugScreen` library.
-* [x] On-screen virtual keyboard for text input.
-* [x] Pagination for search results.
-* [x] Save settings (such as the Real-Debrid token) in a file.
-* [ ] Improve the user interface (UI).
-* [ ] Manage multiple downloads/files.
-* [ ] Integrated video player (a long-term goal).
+###  Real-Debrid Integration  
+- Sends magnet links directly to Real-Debrid  
+- Waits for torrent processing  
+- Retrieves direct download URLs  
 
-## How It Works
+###  Download & Playback  
+- Downloads files to `ux0:data/`  
+- Ability to launch external video players after download  
 
-The application is written in C and compiled using **VitaSDK**.
-All networking logic is fully based on `libcurl` to perform HTTP requests to:
+---
 
-* **`apibay.org`**: For anonymous torrent searches.
-* **`api.real-debrid.com`**: For all torrent-to-direct-link operations.
+##  Project Structure (Simplified)  
+```text
+VitaTPBPlayer/
+├── src/                # C source code
+├── resources/          # Assets and resources
+├── sce_sys/            # PS Vita Live Area Design
+├── Makefile            # VitaSDK build script
+└── README.md           # Project documentation
+```
 
-The interface is rendered directly to the PS Vita framebuffer, providing a lightweight experience without relying on complex UI libraries.
+---
 
-## Build Requirements
+##  Build & Installation
 
-* A PlayStation Vita with [HENkaku](https://henkaku.xyz/) or h-encore.
-* [VitaSDK](https://vitasdk.org/) properly installed and configured in your development environment.
-* A [Real-Debrid](https://real-debrid.com) account with an active subscription.
+This project must be compiled using **VitaSDK** and installed on a **hacked PS Vita** (HENkaku / h-encore).
 
-## How to Build
+### Requirements
 
-1. Clone this repository:
+* PlayStation Vita with [HENkaku](https://henkaku.xyz/) or [h-encore](https://github.com/TheOfficialFloW/h-encore)
+* [VitaSDK](https://vitasdk.org/) properly installed
+* Active [Real-Debrid](https://real-debrid.com/) account and API token
 
-   ```bash
-   git clone https://github.com/mzzvxm/VitaTPBPlayer.git
-   cd VitaTPBPlayer
-   ```
+### Build Steps
 
-2. Build the project:
+```bash
+git clone https://github.com/mzzvxm/VitaTPBPlayer.git
+cd VitaTPBPlayer
+make
+```
 
-   ```bash
-   make
-   ```
+After building, a `.vpk` file will be generated.
+Transfer it to your PS Vita and install it using **[VitaShell](https://github.com/TheOfficialFloW/VitaShell)**.
 
-3. This will generate a `VitaTPBPlayer.vpk` file in the project root. Transfer this file to your PS Vita and install it using VitaShell.
+---
 
-## Legal Disclaimer
+##  Legal Notice
 
-* This project is provided for educational purposes only.
-* The user is fully responsible for any content accessed through this application.
-* This project is not affiliated with The Pirate Bay, Real-Debrid, or any other mentioned entity.
-* Always respect your country’s copyright laws.
+* This project is for **educational purposes only**
+* Downloading copyrighted material may be illegal in your country
+* The developers take **no responsibility** for how this software is used
+* Not affiliated with The Pirate Bay or Real-Debrid
+
+---
+
+##  Author
+
+Developed by **mzzvxm**
+
+Contributions, issues, and pull requests are welcome!
